@@ -1,4 +1,4 @@
--- Meadows Installer (self-contained: no MineOS libraries, images or Files.cfg)
+-- WORKING Meadows Installer (self-contained: no MineOS libraries, images or Files.cfg)
 local component, computer = component, computer
 local gpu = component.proxy(component.list("gpu")() or error("No GPU"))
 local eepromAddr = component.list("eeprom")() or error("No EEPROM")
