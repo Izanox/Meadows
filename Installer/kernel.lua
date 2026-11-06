@@ -1,7 +1,7 @@
 -- ==========================================
--- CHANGE 2.0
--- MEADOWS OS 0.5
--- FOREST EDITION
+-- CHANGE 3.0
+-- MEADOWS OS 1.0
+-- WINDOWS 11 + FOREST EDITION
 -- Native OpenComputers BIOS Kernel
 -- ==========================================
 
@@ -20,13 +20,22 @@ if W < 40 or H < 16 then
 end
 
 local computer = computer
-local fsAddress = component.list("filesystem")()
+-- Prefer the actual boot filesystem so account/config data is read from the
+-- same disk that contains this kernel. Fall back only when the API is absent.
+local fsAddress = nil
+if computer.getBootAddress then
+    local ok, address = pcall(computer.getBootAddress)
+    if ok and address then fsAddress = address end
+end
+if not fsAddress then fsAddress = component.list("filesystem")() end
 if not fsAddress then error("Meadows: No filesystem found") end
 local filesystem = component.proxy(fsAddress)
+if not filesystem then error("Meadows: Cannot access boot filesystem") end
 
 -- 2. CONFIGURATION
 local OS_NAME = "Meadows"
-local VERSION = "0.5"
+local VERSION = "1.0"
+local MAX_WINDOWS = 2
 local DATA_DIR = "/.meadows"
 local CONFIG_FILE = DATA_DIR .. "/system.cfg"
 local ACCOUNTS_FILE = DATA_DIR .. "/accounts.db"
@@ -293,7 +302,7 @@ end
 -- 8. SETUP WIZARD
 local function setupWizard()
     clear()
-    center(3, OS_NAME, C.accent)
+    center(3, OS_NAME .. " 1.0", C.accent)
     center(5, "FIRST-TIME SETUP", C.white)
     center(8, "Welcome to your new Meadows computer.", C.text)
     center(10, "Let's configure your system.", C.muted)
@@ -358,7 +367,14 @@ local function setupWizard()
     messageScreen("Setup complete", "Your Meadows computer is ready.")
 end
 
-if not config.setupComplete or #accounts == 0 then setupWizard() end
+-- Existing accounts are authoritative. A missing/old config flag must never
+-- send an already configured computer through first-time setup again.
+if #accounts == 0 then
+    setupWizard()
+elseif not config.setupComplete then
+    config.setupComplete = true
+    if not saveConfig() then error("Meadows: Could not repair system configuration") end
+end
 
 -- 9. LOGIN
 local currentUser = nil
@@ -438,12 +454,15 @@ local function newWindow(title, width, height, content)
         end
     end
 
-    if #windows >= 2 then
-        table.remove(windows, 1)
+    if #windows >= MAX_WINDOWS then
+        messageScreen("Window limit reached", "Close or minimize an app before opening another window.")
+        return
     end
 
     width = math.min(width, W - 4)
     height = math.min(height, H - 5)
+    width = math.max(24, width)
+    height = math.max(8, height)
     nextID = nextID + 1
 
     local win = {
@@ -555,7 +574,10 @@ local function openMonitor()
 end
 
 -- 13. FILE MANAGER
-local fileState = { path = "/", entries = {}, scroll = 0, selected = 1 }
+local fileState = {
+    path = "/", entries = {}, scroll = 0, selected = 1,
+    contextMenu = nil, clipboard = nil
+}
 
 local function refreshFiles()
     fileState.entries = {}
@@ -582,17 +604,170 @@ local function refreshFiles()
 end
 
 local function joinPath(base, name)
-    if base == "/" then return "/" .. name:gsub("^/+", "") end
-    return base:gsub("/+$", "") .. "/" .. name:gsub("^/+", "")
+    name = tostring(name or ""):gsub("^/+", "")
+    if base == "/" then return "/" .. name end
+    return base:gsub("/+$", "") .. "/" .. name
 end
 
 local function selectedFile()
     return fileState.entries[fileState.selected]
 end
 
+local function validFileName(name)
+    name = tostring(name or ""):gsub("[/\\\\]", "")
+    name = name:gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" or name == "." or name == ".." then return nil end
+    return name
+end
+
+local function copyPath(source, destination)
+    local ok, isDir = pcall(filesystem.isDirectory, source)
+    if not ok then return false end
+    if isDir then
+        local made, result = pcall(filesystem.makeDirectory, destination)
+        if not made or result == false then return false end
+        local listed, iterator = pcall(filesystem.list, source)
+        if not listed or not iterator then return false end
+        local names = {}
+        if type(iterator) == "function" then
+            while true do
+                local good, name = pcall(iterator)
+                if not good or not name then break end
+                names[#names + 1] = tostring(name)
+            end
+        elseif type(iterator) == "table" then
+            for _, name in pairs(iterator) do names[#names + 1] = tostring(name) end
+        end
+        for _, name in ipairs(names) do
+            local clean = name:gsub("/+$", "")
+            if clean ~= "" and not copyPath(joinPath(source, name), joinPath(destination, clean)) then
+                return false
+            end
+        end
+        return true
+    end
+
+    local data = readFile(source)
+    if data == nil then return false end
+    return writeFile(destination, data)
+end
+
+local function removePath(path)
+    local ok, isDir = pcall(filesystem.isDirectory, path)
+    if not ok then return false end
+    if isDir then
+        local listed, iterator = pcall(filesystem.list, path)
+        if not listed or not iterator then return false end
+        local names = {}
+        if type(iterator) == "function" then
+            while true do
+                local good, name = pcall(iterator)
+                if not good or not name then break end
+                names[#names + 1] = tostring(name)
+            end
+        elseif type(iterator) == "table" then
+            for _, name in pairs(iterator) do names[#names + 1] = tostring(name) end
+        end
+        for _, name in ipairs(names) do
+            local clean = name:gsub("/+$", "")
+            if clean ~= "" and not removePath(joinPath(path, name)) then return false end
+        end
+    end
+    local removed, result = pcall(filesystem.remove, path)
+    return removed and result ~= false
+end
+
+local function createFolder()
+    local name = validFileName(inputLine("New folder name", false))
+    if not name then return end
+    local path = joinPath(fileState.path, name)
+    local existsOK, exists = pcall(filesystem.exists, path)
+    if existsOK and exists then messageScreen("Already exists", "An item with that name already exists.") return end
+    local ok, result = pcall(filesystem.makeDirectory, path)
+    if not ok or result == false then messageScreen("Folder failed", "Could not create the folder.") end
+    refreshFiles()
+end
+
+local function createFile()
+    local name = validFileName(inputLine("New file name", false))
+    if not name then return end
+    local path = joinPath(fileState.path, name)
+    local existsOK, exists = pcall(filesystem.exists, path)
+    if existsOK and exists then messageScreen("Already exists", "An item with that name already exists.") return end
+    if not writeFile(path, "") then messageScreen("File failed", "Could not create the file.") end
+    refreshFiles()
+end
+
+local function renameSelected()
+    local oldName = selectedFile()
+    if not oldName then return end
+    local newName = validFileName(inputLine("New name", false))
+    if not newName then return end
+    local oldPath = joinPath(fileState.path, oldName)
+    if oldPath == DATA_DIR or oldPath:sub(1, #DATA_DIR + 1) == DATA_DIR .. "/" then
+        messageScreen("Protected item", "Meadows system data cannot be renamed from File Explorer.")
+        return
+    end
+    local newPath = joinPath(fileState.path, newName)
+    local existsOK, exists = pcall(filesystem.exists, newPath)
+    if existsOK and exists then messageScreen("Already exists", "Choose a name that is not already used.") return end
+    local ok, result = pcall(filesystem.rename, oldPath, newPath)
+    if not ok or result == false then messageScreen("Rename failed", "Could not rename this item.") end
+    refreshFiles()
+end
+
+local function deleteSelected()
+    local name = selectedFile()
+    if not name then return end
+    local confirm = inputLine("Type DELETE to remove " .. name, false)
+    if confirm ~= "DELETE" then return end
+    local path = joinPath(fileState.path, name)
+    if path == DATA_DIR or path:sub(1, #DATA_DIR + 1) == DATA_DIR .. "/" then
+        messageScreen("Protected item", "Meadows system data cannot be deleted from File Explorer.")
+        return
+    end
+    if not removePath(path) then messageScreen("Delete failed", "Could not remove this item.") end
+    refreshFiles()
+end
+
+local function setClipboard(mode)
+    local name = selectedFile()
+    if not name then return end
+    fileState.clipboard = { mode = mode, path = joinPath(fileState.path, name), name = name }
+    fileState.contextMenu = nil
+end
+
+local function pasteClipboard()
+    local clip = fileState.clipboard
+    if not clip then return end
+    local destination = joinPath(fileState.path, clip.name)
+    if destination == clip.path or destination:sub(1, #clip.path + 1) == clip.path .. "/" then
+        messageScreen("Paste blocked", "A folder cannot be copied or moved into itself.")
+        return
+    end
+    local existsOK, exists = pcall(filesystem.exists, destination)
+    if existsOK and exists then
+        messageScreen("Paste blocked", "An item with that name already exists here.")
+        return
+    end
+    local ok, result
+    if clip.mode == "cut" then
+        ok, result = pcall(filesystem.rename, clip.path, destination)
+    else
+        ok, result = pcall(copyPath, clip.path, destination)
+    end
+    if not ok or result == false then
+        messageScreen("Paste failed", "The item could not be pasted here.")
+    elseif clip.mode == "cut" then
+        fileState.clipboard = nil
+    end
+    refreshFiles()
+end
+
 local function openFiles()
     fileState.path = "/"
     fileState.selected = 1
+    fileState.contextMenu = nil
     refreshFiles()
 
     newWindow("Files", 48, 17, function(win)
@@ -609,12 +784,12 @@ local function openFiles()
             local y = win.y + 5 + row
             if index == fileState.selected then rect(win.x + 1, y, win.w - 2, 1, C.accentDark) end
             local folder = name:sub(-1) == "/"
-            put(win.x + 2, y, folder and "[+] " or "[ ]", C.accent)
+            put(win.x + 2, y, folder and "[D]" or "[F]", C.accent)
             put(win.x + 7, y, name, C.text)
             put(win.x + win.w - 12, y, folder and "Folder" or "File", C.muted)
         end
 
-        put(win.x + 2, win.y + win.h - 2, "ENTER Open  BACKSPACE Back  N New folder", C.accent)
+        put(win.x + 2, win.y + win.h - 2, "Right-click: actions   ENTER: open   BACKSPACE: back", C.accent)
         put(win.x + 2, win.y + win.h - 1, tostring(#fileState.entries) .. " items", C.muted)
     end)
 end
@@ -626,6 +801,8 @@ local function openSelectedFile()
     if name:sub(-1) == "/" then
         fileState.path = path
         fileState.selected = 1
+        fileState.scroll = 0
+        fileState.contextMenu = nil
         refreshFiles()
     else
         local data = readFile(path)
@@ -635,50 +812,76 @@ local function openSelectedFile()
         end
         newWindow("File: " .. name, 48, 15, function(win)
             put(win.x + 2, win.y + 2, path, C.accent)
-            local lines, row = 0, win.y + 4
+            local row = win.y + 4
             for textLine in (data .. "\n"):gmatch("(.-)\n") do
                 if row >= win.y + win.h - 2 then break end
                 put(win.x + 2, row, textLine)
-                row, lines = row + 1, lines + 1
+                row = row + 1
             end
             put(win.x + 2, win.y + win.h - 1, "Text preview", C.muted)
         end)
     end
 end
 
-local function createFolder()
-    local name = inputLine("New folder name", false)
-    if not name or name == "" then return end
-    name = name:gsub("[/\\]", "")
-    if name == "" then return end
-    local path = joinPath(fileState.path, name)
-    local ok, result = pcall(filesystem.makeDirectory, path)
-    if not ok or result == false then messageScreen("Folder failed", "Could not create the folder.") end
+local function openParentFolder()
+    if fileState.path == "/" then return end
+    fileState.path = fileState.path:match("^(.*)/[^/]+/?$") or "/"
+    if fileState.path == "" then fileState.path = "/" end
+    fileState.selected = 1
+    fileState.scroll = 0
     refreshFiles()
 end
 
-local function renameSelected()
-    local oldName = selectedFile()
-    if not oldName then return end
-    local newName = inputLine("New name", false)
-    if not newName or newName == "" then return end
-    newName = newName:gsub("[/\\]", "")
-    local oldPath = joinPath(fileState.path, oldName)
-    local newPath = joinPath(fileState.path, newName)
-    local ok, result = pcall(filesystem.rename, oldPath, newPath)
-    if not ok or result == false then messageScreen("Rename failed", "Could not rename this item.") end
-    refreshFiles()
+local function showFileContextMenu(x, y, hasSelection)
+    local items = {}
+    if hasSelection then
+        items = {"Open", "Copy", "Cut", "Rename", "Delete", "Properties", "New file", "New folder", "Paste"}
+    else
+        items = {"New file", "New folder", "Paste", "Refresh", "Back"}
+    end
+    local width = 16
+    local height = #items + 2
+    local menuX = math.max(1, math.min(x, W - width + 1))
+    local menuY = math.max(2, math.min(y, H - height - 1))
+    fileState.contextMenu = {x = menuX, y = menuY, w = width, h = height, items = items}
 end
 
-local function deleteSelected()
-    local name = selectedFile()
-    if not name then return end
-    local confirm = inputLine("Type DELETE to remove " .. name, false)
-    if confirm ~= "DELETE" then return end
-    local path = joinPath(fileState.path, name)
-    local ok, result = pcall(filesystem.remove, path)
-    if not ok or result == false then messageScreen("Delete failed", "Could not remove this item.") end
-    refreshFiles()
+local function runFileContextAction(label)
+    fileState.contextMenu = nil
+    if label == "Open" then openSelectedFile()
+    elseif label == "Copy" then setClipboard("copy")
+    elseif label == "Cut" then setClipboard("cut")
+    elseif label == "Rename" then renameSelected()
+    elseif label == "Delete" then deleteSelected()
+    elseif label == "Properties" then
+        local name = selectedFile()
+        if name then
+            local path = joinPath(fileState.path, name)
+            local isDir = filesystem.isDirectory(path)
+            local size = 0
+            if not isDir and filesystem.size then
+                local ok, result = pcall(filesystem.size, path)
+                if ok then size = result or 0 end
+            end
+            messageScreen("Properties: " .. name,
+                (isDir and "Folder" or "File") .. " | Size: " .. tostring(size) .. " bytes")
+        end
+    elseif label == "New file" then createFile()
+    elseif label == "New folder" then createFolder()
+    elseif label == "Paste" then pasteClipboard()
+    elseif label == "Refresh" then refreshFiles()
+    elseif label == "Back" then openParentFolder() end
+end
+
+local function drawFileContextMenu()
+    local menu = fileState.contextMenu
+    if not menu then return end
+    rect(menu.x + 1, menu.y + 1, menu.w, menu.h, C.shadow)
+    rect(menu.x, menu.y, menu.w, menu.h, C.panel)
+    rect(menu.x, menu.y, menu.w, 1, C.accentDark)
+    for i = 1, #menu.items do
+        put(menu.x + 2, menu.y + i, menu.items[i], C.text)
+    end
 end
 
 -- 14. NOTES
@@ -711,6 +914,7 @@ local function editNotes()
 end
 
 -- 15. TERMINAL AND SETTINGS
+local shutdown, restart, logout
 local function openTerminal()
     newWindow("Meadows Terminal", 46, 15, function(win)
         put(win.x + 2, win.y + 3, "MEADOWS SHELL", C.accent)
@@ -752,30 +956,30 @@ end
 
 -- 16. APP REGISTRY
 local apps = {
-    {name = "Files", symbol = "F", action = openFiles},
-    {name = "Terminal", symbol = ">", action = openTerminal},
-    {name = "Notes", symbol = "N", action = openNotes},
-    {name = "Monitor", symbol = "M", action = openMonitor},
-    {name = "Settings", symbol = "S", action = openSettings},
-    {name = "About", symbol = "i", action = openAbout}
+    {name = "Files", symbol = "[D]", action = openFiles},
+    {name = "Terminal", symbol = ">_", action = openTerminal},
+    {name = "Notes", symbol = "[N]", action = openNotes},
+    {name = "Monitor", symbol = "[M]", action = openMonitor},
+    {name = "Settings", symbol = "[*]", action = openSettings},
+    {name = "About", symbol = "[i]", action = openAbout}
 }
 
 -- 17. POWER AND LOGOUT
-local function shutdown()
+shutdown = function()
     running = false
     clear()
     center(math.floor(H / 2), "MEADOWS IS SHUTTING DOWN", C.accent)
     computer.shutdown()
 end
 
-local function restart()
+restart = function()
     running = false
     clear()
     center(math.floor(H / 2), "RESTARTING MEADOWS", C.accent)
     computer.shutdown(true)
 end
 
-local function logout()
+logout = function()
     windows = {}
     selected = nil
     menuOpen = false
@@ -802,9 +1006,11 @@ end
 
 -- 19. DESKTOP
 local function getIconPosition(i)
-    local x = (i % 2 == 1) and 3 or 12
-    local step = math.max(2, math.floor((H - 8) / 3))
-    local y = 6 + math.floor((i - 1) / 2) * step
+    local column = (i - 1) % 3
+    local row = math.floor((i - 1) / 3)
+    local cellWidth = math.max(10, math.floor((W - 4) / 3))
+    local x = 3 + column * cellWidth
+    local y = 6 + row * 4
     return x, y
 end
 
@@ -820,11 +1026,15 @@ local function drawDesktop()
 
     for i = 1, #apps do
         local x, y = getIconPosition(i)
-        rect(x, y, 5, 2, C.panel2)
-        rect(x, y, 5, 1, C.border)
-        put(x + 2, y, apps[i].symbol, C.accent)
+        rect(x, y, 11, 2, C.panel2)
+        rect(x, y, 11, 1, C.border)
+        local symbol = apps[i].symbol
+        put(x + math.floor((11 - #symbol) / 2), y, symbol, C.accent)
+        local label = apps[i].name
+        local labelX = x + math.floor((11 - #label) / 2)
+        put(labelX, y + 2, label, C.text)
     end
-    put(3, H - 3, "MEADOWS OS 0.5", C.muted)
+    put(3, H - 3, "MEADOWS OS 1.0", C.muted)
 end
 
 local function drawStartMenu()
@@ -845,38 +1055,82 @@ local function drawStartMenu()
     put(18, menuY + 10, "Q Power", C.close)
 end
 
+local function taskbarLayout()
+    local total = (#apps + 1) * 4 - 1
+    local startX = math.floor((W - total) / 2) + 1
+    return startX, total
+end
+
 local function drawTaskbar()
     rect(1, H - 1, W, 2, C.panel)
-    rect(2, H - 1, 5, 2, menuOpen and C.accentDark or C.panel2)
-    put(4, H, "M", C.accent)
-
-    local x = 9
-    for i = 1, #windows do
-        local win = windows[i]
-        local label = win.title
-        if #label > 8 then label = label:sub(1, 8) end
-        local buttonWidth = #label + 3
-        if x + buttonWidth < W - 12 then
-            rect(x, H - 1, buttonWidth, 2, win.id == selected and C.accentDark or C.panel2)
-            put(x + 1, H, label, win.id == selected and C.white or C.muted)
-            x = x + buttonWidth + 1
+    rect(1, H - 1, W, 1, C.border)
+    local startX = taskbarLayout()
+    local x = startX
+    rect(x, H - 1, 3, 2, menuOpen and C.accentDark or C.panel2)
+    put(x + 1, H, "M", C.accent)
+    x = x + 4
+    for i = 1, #apps do
+        local active = false
+        for j = 1, #windows do
+            if windows[j].title == apps[i].name or
+                (apps[i].name == "Files" and windows[j].title == "Files") or
+                (apps[i].name == "Notes" and windows[j].title == "Meadows Notes") or
+                (apps[i].name == "Terminal" and windows[j].title == "Meadows Terminal") or
+                (apps[i].name == "Settings" and windows[j].title == "Meadows Settings") or
+                (apps[i].name == "Monitor" and windows[j].title == "System Monitor") then
+                if windows[j].id == selected then active = true end
+            end
         end
+        rect(x, H - 1, 3, 2, active and C.accentDark or C.panel2)
+        put(x + 1, H, apps[i].symbol, active and C.white or C.accent)
+        x = x + 4
     end
-
-    local uptime = math.floor(computer.uptime())
-    local clock = tostring(math.floor(uptime / 60)) .. "m " .. tostring(uptime % 60) .. "s"
-    put(W - #clock - 2, H, clock, C.accent)
 end
 
 local function draw()
     drawDesktop()
     for i = 1, #windows do drawWindow(windows[i]) end
     if menuOpen then drawStartMenu() end
+    drawFileContextMenu()
     drawTaskbar()
 end
 
 -- 20. TOUCH AND MOUSE
-local function handleTouch(x, y)
+local function handleTouch(x, y, button)
+    -- Right-clicking inside Files opens its context menu.
+    if button == 1 then
+        for i = #windows, 1, -1 do
+            local win = windows[i]
+            if not win.minimized and win.title == "Files" and
+                x >= win.x and x <= win.x + win.w - 1 and
+                y >= win.y + 5 and y < win.y + win.h - 2 then
+                bringToFront(i)
+                local row = y - (win.y + 5)
+                local index = fileState.scroll + row
+                if fileState.entries[index] then fileState.selected = index end
+                showFileContextMenu(x, y, fileState.entries[index] ~= nil)
+                return
+            elseif not win.minimized and win.title == "Files" and
+                x >= win.x and x <= win.x + win.w - 1 and
+                y > win.y + 1 and y < win.y + win.h - 2 then
+                bringToFront(i)
+                showFileContextMenu(x, y, false)
+                return
+            end
+        end
+    end
+
+    if fileState.contextMenu then
+        local menu = fileState.contextMenu
+        if x >= menu.x and x < menu.x + menu.w and y >= menu.y and y < menu.y + menu.h then
+            local index = y - menu.y
+            if index >= 1 and menu.items[index] then runFileContextAction(menu.items[index]) end
+        else
+            fileState.contextMenu = nil
+        end
+        return
+    end
+
     if menuOpen then
         local menuY = H - 13
         if x >= 2 and x <= 29 then
@@ -892,20 +1146,30 @@ local function handleTouch(x, y)
     end
 
     if y >= H - 1 then
-        if x <= 7 then menuOpen = not menuOpen return end
-        local position = 9
-        for i = 1, #windows do
-            local win = windows[i]
-            local label = win.title
-            if #label > 8 then label = label:sub(1, 8) end
-            local width = #label + 3
-            if x >= position and x < position + width then
-                win.minimized = false
-                local _, index = getWindow(win.id)
-                if index then bringToFront(index) end
+        local startX = taskbarLayout()
+        if x >= startX and x < startX + 3 then menuOpen = not menuOpen return end
+        local position = startX + 4
+        for i = 1, #apps do
+            if x >= position and x < position + 3 then
+                local restored = false
+                for j = 1, #windows do
+                    local w = windows[j]
+                    local matches = w.title == apps[i].name or
+                        (apps[i].name == "Notes" and w.title == "Meadows Notes") or
+                        (apps[i].name == "Terminal" and w.title == "Meadows Terminal") or
+                        (apps[i].name == "Settings" and w.title == "Meadows Settings") or
+                        (apps[i].name == "Monitor" and w.title == "System Monitor")
+                    if matches then
+                        w.minimized = false
+                        bringToFront(j)
+                        restored = true
+                        break
+                    end
+                end
+                if not restored then apps[i].action() end
                 return
             end
-            position = position + width + 1
+            position = position + 4
         end
         return
     end
@@ -922,18 +1186,15 @@ local function handleTouch(x, y)
                 closeWindow(win.id)
                 return
             end
-
             if y == win.y and x >= win.x + win.w - 7 and x < win.x + win.w - 4 then
                 maximizeWindow(win)
                 return
             end
-
             if y == win.y and x >= win.x + win.w - 10 and x < win.x + win.w - 7 then
                 win.minimized = true
                 selected = nil
                 return
             end
-
             if y == win.y or y == win.y + 1 then
                 dragState = {id = win.id, offsetX = x - win.x, offsetY = y - win.y}
             end
@@ -949,7 +1210,7 @@ local function handleTouch(x, y)
 
     for i = 1, #apps do
         local iconX, iconY = getIconPosition(i)
-        if x >= iconX and x <= iconX + 4 and y >= iconY and y <= iconY + 1 then
+        if x >= iconX - 1 and x <= iconX + 11 and y >= iconY and y <= iconY + 2 then
             apps[i].action()
             return
         end
@@ -995,16 +1256,14 @@ local function handleKey(char, code)
 
         elseif win.title == "Files" then
             if code == 28 or char == 13 then openSelectedFile()
-            elseif code == 14 or char == 8 then
-                if fileState.path ~= "/" then
-                    fileState.path = fileState.path:match("^(.*)/[^/]+/?$") or "/"
-                    if fileState.path == "" then fileState.path = "/" end
-                    fileState.selected = 1
-                    refreshFiles()
-                end
+            elseif code == 14 or char == 8 then openParentFolder()
             elseif char == 110 or char == 78 then createFolder()
+            elseif char == 102 or char == 70 then createFile()
             elseif char == 114 or char == 82 then renameSelected()
             elseif char == 100 or char == 68 then deleteSelected()
+            elseif char == 99 or char == 67 then setClipboard("copy")
+            elseif char == 120 or char == 88 then setClipboard("cut")
+            elseif char == 118 or char == 86 then pasteClipboard()
             elseif code == 200 then
                 fileState.selected = math.max(1, fileState.selected - 1)
             elseif code == 208 then
@@ -1033,13 +1292,27 @@ while running do
     local signal, address, p1, p2, p3 = computer.pullSignal(0.2)
 
     if signal == "touch" then
-        handleTouch(p1, p2)
+        handleTouch(p1, p2, p3)
     elseif signal == "drag" then
         handleDrag(p1, p2)
     elseif signal == "drop" then
         dragState = nil
     elseif signal == "key_down" then
         handleKey(p1, p2)
+    elseif signal == "screen_resized" then
+        local newW, newH = gpu.getResolution()
+        if newW and newH and newW >= 40 and newH >= 16 then
+            W, H = newW, newH
+            for i = 1, #windows do
+                local w = windows[i]
+                if w.maximized then
+                    w.x, w.y, w.w, w.h = 2, 2, W - 3, H - 5
+                else
+                    w.x = math.max(1, math.min(w.x, W - w.w + 1))
+                    w.y = math.max(2, math.min(w.y, H - w.h - 2))
+                end
+            end
+        end
     elseif signal == "interrupted" then
         -- Ignore interrupt.
     end
