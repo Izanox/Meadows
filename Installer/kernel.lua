@@ -1,11 +1,13 @@
--- CHANGE 1.1
+-- Change 1.2
 --[[
     MEADOWS OS
-    Version: 0.1
+    Version: 0.2
     Independent OpenComputers Desktop Environment
 ]]
 
--- Native OpenComputers BIOS APIs
+-- ==========================================
+-- HARDWARE INITIALIZATION
+-- ==========================================
 
 local gpuAddress = component.list("gpu")()
 local screenAddress = component.list("screen")()
@@ -15,20 +17,23 @@ if not gpuAddress or not screenAddress then
 end
 
 local gpu = component.proxy(gpuAddress)
-
 gpu.bind(screenAddress)
 
-local computer = computer
 local W, H = gpu.getResolution()
 
--- ==========================================
--- CONFIGURATION
--- ==========================================
+if W < 30 or H < 12 then
+    error("Meadows: Screen resolution too small")
+end
 
-local VERSION = "0.1"
+local fsAddress = component.list("filesystem")()
+local filesystem = fsAddress and component.proxy(fsAddress) or nil
+
+local VERSION = "0.2"
 local OS_NAME = "Meadows"
 
-local W, H = gpu.getResolution()
+-- ==========================================
+-- COLORS
+-- ==========================================
 
 local C = {
     background = 0x101A18,
@@ -49,20 +54,40 @@ gpu.setForeground(C.text)
 gpu.fill(1, 1, W, H, " ")
 
 -- ==========================================
--- DRAWING FUNCTIONS
+-- GRAPHICS FUNCTIONS
 -- ==========================================
 
 local function rect(x, y, w, h, color, char)
+    if w <= 0 or h <= 0 then return end
+
     gpu.setBackground(color)
     gpu.fill(x, y, w, h, char or " ")
 end
 
 local function put(x, y, value, color)
+    value = tostring(value)
+
+    if y < 1 or y > H or x > W or x + #value - 1 < 1 then
+        return
+    end
+
+    if x < 1 then
+        value = value:sub(2 - x)
+        x = 1
+    end
+
+    if x + #value - 1 > W then
+        value = value:sub(1, W - x + 1)
+    end
+
+    if #value == 0 then return end
+
     gpu.setForeground(color or C.text)
-    gpu.set(x, y, tostring(value))
+    gpu.set(x, y, value)
 end
 
 local function center(y, value, color)
+    value = tostring(value)
     put(math.floor((W - #value) / 2) + 1, y, value, color)
 end
 
@@ -76,9 +101,7 @@ end
 
 clear()
 
-rect(1, 1, W, H, C.background)
-
-center(math.floor(H / 2) - 2, "MEADOWS", C.accent)
+center(math.floor(H / 2) - 2, OS_NAME, C.accent)
 center(math.floor(H / 2), "A different kind of desktop.", C.muted)
 center(math.floor(H / 2) + 3, "Starting system...", C.text)
 
@@ -86,9 +109,11 @@ for i = 1, 20 do
     local width = math.min(20, W - 4)
     local x = math.floor((W - width) / 2) + 1
     local filled = math.floor(width * i / 20)
+    local barY = math.min(H - 1, math.floor(H / 2) + 5)
 
-    rect(x, math.floor(H / 2) + 5, width, 1, C.panel, " ")
-    rect(x, math.floor(H / 2) + 5, filled, 1, C.accent, " ")
+    rect(x, barY, width, 1, C.panel)
+    rect(x, barY, filled, 1, C.accent)
+
     computer.pullSignal(0.035)
 end
 
@@ -107,13 +132,16 @@ local running = true
 -- ==========================================
 
 local function newWindow(title, width, height, content)
+    width = math.min(width, W - 2)
+    height = math.min(height, H - 3)
+
     nextID = nextID + 1
 
     local win = {
         id = nextID,
         title = title,
         x = math.floor((W - width) / 2),
-        y = math.floor((H - height - 2) / 2),
+        y = math.floor((H - height - 1) / 2) + 1,
         w = width,
         h = height,
         content = content,
@@ -137,10 +165,17 @@ end
 
 local function closeWindow(id)
     local _, index = getWindow(id)
+
     if index then
         table.remove(windows, index)
-        selected = windows[#windows] and windows[#windows].id
+        selected = windows[#windows] and windows[#windows].id or nil
     end
+end
+
+local function bringToFront(index)
+    local win = table.remove(windows, index)
+    windows[#windows + 1] = win
+    selected = win.id
 end
 
 -- ==========================================
@@ -152,8 +187,10 @@ local function openAbout()
         put(win.x + 2, win.y + 3, "MEADOWS OPERATING SYSTEM", C.accent)
         put(win.x + 2, win.y + 5, "Version: " .. VERSION)
         put(win.x + 2, win.y + 6, "Platform: OpenComputers")
+
         put(win.x + 2, win.y + 7, "Memory: " ..
             math.floor(computer.totalMemory() / 1024) .. " KB")
+
         put(win.x + 2, win.y + 9, "Made for a different desktop.", C.muted)
     end)
 end
@@ -161,10 +198,13 @@ end
 local function openMonitor()
     newWindow("System Monitor", 38, 12, function(win)
         put(win.x + 2, win.y + 3, "SYSTEM INFORMATION", C.accent)
+
         put(win.x + 2, win.y + 5, "Memory: " ..
             math.floor(computer.freeMemory() / 1024) .. " KB free")
+
         put(win.x + 2, win.y + 6, "Uptime: " ..
             math.floor(computer.uptime()) .. " seconds")
+
         put(win.x + 2, win.y + 7, "Screen: " .. W .. " x " .. H)
         put(win.x + 2, win.y + 9, "Meadows " .. VERSION, C.muted)
     end)
@@ -175,47 +215,64 @@ local function openNotes()
 
     newWindow("Meadows Notes", 42, 13, function(win)
         put(win.x + 2, win.y + 3, "NOTES", C.accent)
-        put(win.x + 2, win.y + 5, notes == "" and
-            "No notes yet." or notes)
-        put(win.x + 2, win.y + 8, "Press N to add a note.", C.muted)
+
+        put(win.x + 2, win.y + 5,
+            notes == "" and "No notes yet." or notes)
+
+        put(win.x + 2, win.y + 8, "Note editing coming soon.", C.muted)
     end)
 end
 
 local function openTerminal()
     newWindow("Meadows Terminal", 46, 13, function(win)
         put(win.x + 2, win.y + 3, "MEADOWS SHELL", C.accent)
-        put(win.x + 2, win.y + 5, "Available commands:", C.muted)
+        put(win.x + 2, win.y + 5, "Available demo commands:", C.muted)
         put(win.x + 2, win.y + 6, "about")
         put(win.x + 2, win.y + 7, "monitor")
         put(win.x + 2, win.y + 8, "clear")
-        put(win.x + 2, win.y + 10, "Terminal is currently a basic shell preview.")
+        put(win.x + 2, win.y + 10, "Interactive shell coming soon.")
     end)
 end
 
 local function openFiles()
     newWindow("Meadows Files", 46, 15, function(win)
-        put(win.x + 2, win.y + 3, "FILE SYSTEM", C.accent)
+        put(win.x + 2, win.y + 3, "FILE SYSTEM  /", C.accent)
 
-        local ok, files = pcall(function()
-            return require("filesystem").list("/")
-        end)
+        if not filesystem then
+            put(win.x + 2, win.y + 5,
+                "No filesystem component found.", C.close)
+            return
+        end
 
-        if ok then
-            local y = win.y + 5
-            for name in files do
-                if y < win.y + win.h - 2 then
-                    put(win.x + 2, y, name)
-                    y = y + 1
-                end
+        local ok, files = pcall(filesystem.list, "/")
+
+        if not ok or not files then
+            put(win.x + 2, win.y + 5,
+                "Unable to read filesystem.", C.close)
+            return
+        end
+
+        local y = win.y + 5
+        local count = 0
+
+        for name in files do
+            if y >= win.y + win.h - 1 then
+                break
             end
-        else
-            put(win.x + 2, win.y + 5, "Unable to read filesystem.")
+
+            put(win.x + 2, y, name)
+            y = y + 1
+            count = count + 1
+        end
+
+        if count == 0 then
+            put(win.x + 2, y, "Directory is empty.", C.muted)
         end
     end)
 end
 
 -- ==========================================
--- DESKTOP ICONS
+-- APPLICATION LIST
 -- ==========================================
 
 local apps = {
@@ -226,164 +283,6 @@ local apps = {
     {name = "About", action = openAbout}
 }
 
--- ==========================================
--- DRAW WINDOW
--- ==========================================
-
-local function drawWindow(win)
-    if win.minimized then return end
-
-    rect(win.x, win.y, win.w, win.h, C.window)
-    rect(win.x, win.y, win.w, 2, C.titlebar)
-
-    put(win.x + 2, win.y, win.title, C.white)
-    put(win.x + win.w - 3, win.y, "x", C.close)
-
-    if win.content then
-        win.content(win)
-    end
-end
-
--- ==========================================
--- DESKTOP DRAW
--- ==========================================
-
-local function draw()
-    clear()
-
-    -- Desktop background
-    rect(1, 1, W, H - 1, C.desktop)
-
-    -- Header
-    rect(1, 1, W, 1, C.panel)
-    put(3, 1, "MEADOWS", C.accent)
-    put(W - 18, 1, "v" .. VERSION, C.muted)
-
-    -- Desktop icons
-    local y = 4
-
-    for i = 1, #apps do
-        put(3, y, "[]", C.accent)
-        put(7, y, apps[i].name, C.text)
-        y = y + 3
-    end
-
-    -- Windows
-    for i = 1, #windows do
-        drawWindow(windows[i])
-    end
-
-    -- Start menu
-    if menuOpen then
-        local menuY = math.max(2, H - 13)
-        rect(2, menuY, 23, 11, C.panel)
-        put(4, menuY + 1, "MEADOWS MENU", C.accent)
-
-        for i = 1, #apps do
-            put(4, menuY + i + 2, (i) .. ". " .. apps[i].name)
-        end
-
-        put(4, menuY + 9, "Q. Shutdown", C.close)
-    end
-
-    -- Bottom taskbar
-    rect(1, H, W, 1, C.panel)
-    put(2, H, "M", C.accent)
-    put(5, H, "Meadows Desktop", C.text)
-
-    local clock = computer.uptime()
-    put(W - #clock - 1, H, clock, C.accent)
-end
-
--- ==========================================
--- EVENT HANDLING
--- ==========================================
-
-local function shutdown()
-    running = false
-    computer.shutdown()
-end
-
-local function handleTouch(x, y)
-    if menuOpen then
-        local menuY = math.max(2, H - 13)
-
-        if y >= menuY + 3 and y <= menuY + 7 then
-            local index = y - menuY - 2
-            if apps[index] then
-                apps[index].action()
-            end
-        elseif y == menuY + 9 then
-            shutdown()
-        end
-
-        menuOpen = false
-        return
-    end
-
-    -- Start button
-    if y == H and x <= 3 then
-        menuOpen = not menuOpen
-        return
-    end
-
-    -- Desktop applications
-    if x >= 3 and x <= 18 and y >= 4 and y <= 16 then
-        local index = math.floor((y - 4) / 3) + 1
-
-        if apps[index] and (y - 4) % 3 == 0 then
-            apps[index].action()
-            return
-        end
-    end
-
-    -- Window interactions
-    for i = #windows, 1, -1 do
-        local win = windows[i]
-
-        if not win.minimized and
-            x >= win.x and x <= win.x + win.w - 1 and
-            y >= win.y and y < win.y + win.h then
-
-            selected = win.id
-
-            if y == win.y and x >= win.x + win.w - 4 then
-                closeWindow(win.id)
-            end
-
-            return
-        end
-    end
-end
-
--- ==========================================
--- STARTUP
--- ==========================================
-
-openAbout()
-
-while running do
-    draw()
-
-    local signal, address, x, y = computer.pullSignal(0.5)
-
-    if signal == "touch" then
-        handleTouch(x, y)
-
-    elseif signal == "key_down" then
-        local char = y
-        local code = x
-
-        if code == 16 then
-            shutdown()
-        elseif char == 109 then
-            menuOpen = not menuOpen
-        end
-
-    elseif signal == "interrupted" then
-        -- Ignore accidental interrupt
-    end
-end
 -- ==========================================
 -- WINDOW DRAWING
 -- ==========================================
@@ -403,6 +302,20 @@ local function drawWindow(win)
 end
 
 -- ==========================================
+-- SHUTDOWN
+-- ==========================================
+
+local function shutdown()
+    running = false
+
+    gpu.setBackground(0x000000)
+    gpu.setForeground(0xFFFFFF)
+    gpu.fill(1, 1, W, H, " ")
+
+    computer.shutdown()
+end
+
+-- ==========================================
 -- DESKTOP DRAWING
 -- ==========================================
 
@@ -414,14 +327,14 @@ local function draw()
 
     -- Header
     rect(1, 1, W, 1, C.panel)
-    put(3, 1, "MEADOWS", C.accent)
-    put(W - 10, 1, "v" .. VERSION, C.muted)
+    put(3, 1, OS_NAME:upper(), C.accent)
+    put(W - 8, 1, "v" .. VERSION, C.muted)
 
     -- Desktop icons
     local y = 4
 
     for i = 1, #apps do
-        if y < H - 2 then
+        if y < H - 1 then
             put(3, y, "[]", C.accent)
             put(7, y, apps[i].name, C.text)
         end
@@ -429,7 +342,7 @@ local function draw()
         y = y + 3
     end
 
-    -- Windows
+    -- Windows (last window is drawn on top)
     for i = 1, #windows do
         drawWindow(windows[i])
     end
@@ -463,23 +376,11 @@ local function draw()
 end
 
 -- ==========================================
--- SHUTDOWN
--- ==========================================
-
-local function shutdown()
-    running = false
-    gpu.setBackground(0x000000)
-    gpu.setForeground(0xFFFFFF)
-    gpu.fill(1, 1, W, H, " ")
-    computer.shutdown()
-end
-
--- ==========================================
 -- TOUCH EVENTS
 -- ==========================================
 
 local function handleTouch(x, y)
-    -- Start menu interactions
+    -- Start menu
     if menuOpen then
         local menuY = math.max(2, H - 13)
 
@@ -505,13 +406,17 @@ local function handleTouch(x, y)
     end
 
     -- Desktop icons
-    if x >= 3 and x <= 18 and y >= 4 and y <= 16 then
-        local index = math.floor((y - 4) / 3) + 1
+    local iconY = 4
 
-        if apps[index] and (y - 4) % 3 == 0 then
-            apps[index].action()
+    for i = 1, #apps do
+        if iconY < H - 1 and
+            x >= 3 and x <= 18 and y == iconY then
+
+            apps[i].action()
             return
         end
+
+        iconY = iconY + 3
     end
 
     -- Window interactions
@@ -522,19 +427,15 @@ local function handleTouch(x, y)
             x >= win.x and x <= win.x + win.w - 1 and
             y >= win.y and y < win.y + win.h then
 
-            selected = win.id
+            -- Bring selected window to front
+            bringToFront(i)
 
             -- Close button
             if y == win.y and
                 x >= win.x + win.w - 4 then
 
                 closeWindow(win.id)
-                return
             end
-
-            -- Bring window to front
-            table.remove(windows, i)
-            windows[#windows + 1] = win
 
             return
         end
@@ -546,7 +447,7 @@ end
 -- ==========================================
 
 local function handleKey(char, code)
-    -- Q: Shutdown when menu is open
+    -- Q: Shutdown from start menu
     if menuOpen and (char == 113 or char == 81) then
         shutdown()
         return
@@ -569,22 +470,27 @@ end
 -- ==========================================
 
 openAbout()
-
 draw()
 
 while running do
-    local signal, address, char, code, player =
+    local signal, address, p1, p2, p3 =
         computer.pullSignal(0.2)
 
     if signal == "touch" then
-        handleTouch(char, code)
+        -- OpenComputers touch:
+        -- address, x, y, button, player
+        handleTouch(p1, p2)
 
     elseif signal == "key_down" then
-        handleKey(char, code)
+        -- OpenComputers key_down:
+        -- address, character, keyCode, player
+        handleKey(p1, p2)
 
     elseif signal == "interrupted" then
-        -- Ignore interrupt
+        -- Ignore interruption
     end
 
-    draw()
+    if running then
+        draw()
+    end
 end
