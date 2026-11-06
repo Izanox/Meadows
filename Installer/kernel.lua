@@ -1,64 +1,134 @@
 -- ==========================================
--- CHANGE 4.1
+-- CHANGE 4.2
 -- MEADOWS OS 1.0
 -- WINDOWS 11 + FOREST EDITION
 -- Native OpenComputers BIOS Kernel
 -- ==========================================
 
--- 1. HARDWARE
+
+-- ==========================================
+-- 1. HARDWARE AND PERSISTENT STORAGE
+-- ==========================================
+
 local gpuAddress = component.list("gpu")()
 local screenAddress = component.list("screen")()
+
 if not gpuAddress or not screenAddress then
     error("Meadows: GPU or screen missing")
 end
 
 local gpu = component.proxy(gpuAddress)
 gpu.bind(screenAddress)
+
 local W, H = gpu.getResolution()
+
 if W < 40 or H < 16 then
     error("Meadows: Minimum resolution is 40x16")
 end
 
 local computer = computer
--- Select a writable filesystem, while preferring any filesystem that already
--- contains Meadows data so existing accounts and notes remain in place.
+
+-- Find boot device
 local bootAddress = nil
+
 if computer.getBootAddress then
     local ok, address = pcall(computer.getBootAddress)
-    if ok and address then bootAddress = address end
+    if ok then bootAddress = address end
 end
-local fsAddress, fallbackWritable = nil, nil
+
+-- Find persistent storage
+local fsAddress = nil
+local fallbackWritable = nil
+local bootWritable = nil
+
+local DATA_DIR = "/.meadows"
+
 local function inspectFilesystem(address)
-    local fs = component.proxy(address)
-    if not fs then return nil, false, false end
-    local hasData = false
-    local okExists, exists = pcall(fs.exists, "/.meadows")
-    if okExists and exists then hasData = true end
-    local readOnly = false
-    if fs.isReadOnly then
-        local okRO, value = pcall(fs.isReadOnly)
-        if okRO then readOnly = value end
+    local ok, fs = pcall(component.proxy, address)
+
+    if not ok or not fs then
+        return nil, false, true
     end
+
+    local hasData = false
+
+    local existsOK, exists = pcall(fs.exists, DATA_DIR)
+
+    if existsOK and exists then
+        hasData = true
+    end
+
+    local readOnly = true
+
+    if fs.isReadOnly then
+        local roOK, value = pcall(fs.isReadOnly)
+
+        if roOK then
+            readOnly = value
+        end
+    else
+        readOnly = false
+    end
+
     return fs, hasData, readOnly
 end
+
 local addresses = {}
-if bootAddress then addresses[#addresses + 1] = bootAddress end
+
 for address in component.list("filesystem") do
-    if address ~= bootAddress then addresses[#addresses + 1] = address end
+    addresses[#addresses + 1] = address
 end
+
+-- FIRST: Find existing Meadows installation
 for _, address in ipairs(addresses) do
     local fs, hasData, readOnly = inspectFilesystem(address)
+
     if fs and hasData then
-        if readOnly then error("Meadows: Existing data disk is read-only. Connect a writable disk or change its permissions.") end
+        if readOnly then
+            error("Meadows: Existing installation is read-only!")
+        end
+
         fsAddress = address
         break
     end
-    if fs and not readOnly and not fallbackWritable then fallbackWritable = address end
 end
-fsAddress = fsAddress or fallbackWritable
-if not fsAddress then error("Meadows: No writable filesystem found. Check that a writable disk is installed.") end
+
+-- SECOND: Prefer a writable non-boot disk
+if not fsAddress then
+    for _, address in ipairs(addresses) do
+        if address ~= bootAddress then
+            local fs, hasData, readOnly = inspectFilesystem(address)
+
+            if fs and not readOnly then
+                fallbackWritable = address
+                break
+            end
+        end
+    end
+end
+
+-- THIRD: Use boot device if no other disk exists
+if not fsAddress then
+    fsAddress = fallbackWritable
+end
+
+if not fsAddress and bootAddress then
+    local fs, _, readOnly = inspectFilesystem(bootAddress)
+
+    if fs and not readOnly then
+        fsAddress = bootAddress
+    end
+end
+
+if not fsAddress then
+    error("Meadows: No writable filesystem found!")
+end
+
 local filesystem = component.proxy(fsAddress)
-if not filesystem then error("Meadows: Cannot access selected filesystem") end
+
+if not filesystem then
+    error("Meadows: Cannot access selected filesystem")
+end
 
 -- 2. CONFIGURATION
 local OS_NAME = "Meadows"
@@ -119,41 +189,90 @@ local function line(y)
     rect(2, y, W - 2, 1, C.titlebar)
 end
 
+
+-- ==========================================
 -- 4. FILE STORAGE
+-- ==========================================
+
 local function readFile(path)
     local ok, handle = pcall(filesystem.open, path, "r")
-    if not ok or not handle then return nil end
+
+    if not ok or not handle then
+        return nil
+    end
+
     local result = ""
+
     while true do
         local success, data = pcall(filesystem.read, handle, 4096)
-        if not success or not data or #data == 0 then break end
+
+        if not success or not data or #data == 0 then
+            break
+        end
+
         result = result .. data
     end
+
     pcall(filesystem.close, handle)
+
     return result
 end
 
 local function writeFile(path, data)
+    data = tostring(data or "")
+
     local ok, handle = pcall(filesystem.open, path, "w")
-    if not ok or not handle then return false end
+
+    if not ok or not handle then
+        return false
+    end
+
     local success, result = pcall(filesystem.write, handle, data)
+
     pcall(filesystem.close, handle)
-    return success and result ~= false
+
+    if not success or result == false then
+        return false
+    end
+
+    -- Verify that the data was actually written
+    local saved = readFile(path)
+
+    if saved ~= data then
+        return false
+    end
+
+    return true
 end
 
 local function initializeStorage()
     local ok, exists = pcall(filesystem.exists, DATA_DIR)
-    if not ok then error("Meadows: Cannot check system directory: " .. tostring(exists)) end
+
+    if not ok then
+        error("Meadows: Cannot check system directory")
+    end
+
     if not exists then
-        local makeOK, made, reason = pcall(filesystem.makeDirectory, DATA_DIR)
-        local checkOK, created = pcall(filesystem.exists, DATA_DIR)
-        if not checkOK or not created then
-            local detail = makeOK and tostring(reason or made or "filesystem refused the request") or tostring(made)
-            error("Meadows: Cannot create system directory: " .. detail)
+        local makeOK, result = pcall(
+            filesystem.makeDirectory,
+            DATA_DIR
+        )
+
+        if not makeOK or result == false then
+            error("Meadows: Cannot create system directory")
         end
     end
+
+    -- Verify directory creation
+    local checkOK, created = pcall(filesystem.exists, DATA_DIR)
+
+    if not checkOK or not created then
+        error("Meadows: Storage initialization failed")
+    end
 end
+
 initializeStorage()
+
 
 -- 5. CONFIGURATION DATABASE
 local config = { setupComplete = false, computerName = "MEADOWS-PC", theme = "forest" }
