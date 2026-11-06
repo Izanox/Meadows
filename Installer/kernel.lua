@@ -234,6 +234,7 @@ local function openTerminal()
     end)
 end
 
+
 local function openFiles()
     newWindow("Meadows Files", 46, 15, function(win)
         put(win.x + 2, win.y + 3, "FILE SYSTEM  /", C.accent)
@@ -244,18 +245,32 @@ local function openFiles()
             return
         end
 
-        local ok, files = pcall(filesystem.list, "/")
+        local ok, files = pcall(function()
+            return filesystem.list("/")
+        end)
 
-        if not ok or not files then
+        if not ok then
             put(win.x + 2, win.y + 5,
                 "Unable to read filesystem.", C.close)
+            return
+        end
+
+        if type(files) ~= "function" then
+            put(win.x + 2, win.y + 5,
+                "Invalid directory listing.", C.close)
             return
         end
 
         local y = win.y + 5
         local count = 0
 
-        for name in files do
+        while true do
+            local success, name = pcall(files)
+
+            if not success or not name then
+                break
+            end
+
             if y >= win.y + win.h - 1 then
                 break
             end
@@ -270,6 +285,7 @@ local function openFiles()
         end
     end)
 end
+
 
 -- ==========================================
 -- APPLICATION LIST
