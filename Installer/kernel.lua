@@ -1,5 +1,5 @@
 -- ==========================================
--- CHANGE 3.0
+-- CHANGE 4.1
 -- MEADOWS OS 1.0
 -- WINDOWS 11 + FOREST EDITION
 -- Native OpenComputers BIOS Kernel
@@ -20,17 +20,45 @@ if W < 40 or H < 16 then
 end
 
 local computer = computer
--- Prefer the actual boot filesystem so account/config data is read from the
--- same disk that contains this kernel. Fall back only when the API is absent.
-local fsAddress = nil
+-- Select a writable filesystem, while preferring any filesystem that already
+-- contains Meadows data so existing accounts and notes remain in place.
+local bootAddress = nil
 if computer.getBootAddress then
     local ok, address = pcall(computer.getBootAddress)
-    if ok and address then fsAddress = address end
+    if ok and address then bootAddress = address end
 end
-if not fsAddress then fsAddress = component.list("filesystem")() end
-if not fsAddress then error("Meadows: No filesystem found") end
+local fsAddress, fallbackWritable = nil, nil
+local function inspectFilesystem(address)
+    local fs = component.proxy(address)
+    if not fs then return nil, false, false end
+    local hasData = false
+    local okExists, exists = pcall(fs.exists, "/.meadows")
+    if okExists and exists then hasData = true end
+    local readOnly = false
+    if fs.isReadOnly then
+        local okRO, value = pcall(fs.isReadOnly)
+        if okRO then readOnly = value end
+    end
+    return fs, hasData, readOnly
+end
+local addresses = {}
+if bootAddress then addresses[#addresses + 1] = bootAddress end
+for address in component.list("filesystem") do
+    if address ~= bootAddress then addresses[#addresses + 1] = address end
+end
+for _, address in ipairs(addresses) do
+    local fs, hasData, readOnly = inspectFilesystem(address)
+    if fs and hasData then
+        if readOnly then error("Meadows: Existing data disk is read-only. Connect a writable disk or change its permissions.") end
+        fsAddress = address
+        break
+    end
+    if fs and not readOnly and not fallbackWritable then fallbackWritable = address end
+end
+fsAddress = fsAddress or fallbackWritable
+if not fsAddress then error("Meadows: No writable filesystem found. Check that a writable disk is installed.") end
 local filesystem = component.proxy(fsAddress)
-if not filesystem then error("Meadows: Cannot access boot filesystem") end
+if not filesystem then error("Meadows: Cannot access selected filesystem") end
 
 -- 2. CONFIGURATION
 local OS_NAME = "Meadows"
@@ -115,11 +143,14 @@ end
 
 local function initializeStorage()
     local ok, exists = pcall(filesystem.exists, DATA_DIR)
-    if not ok then error("Meadows: Cannot check system directory") end
+    if not ok then error("Meadows: Cannot check system directory: " .. tostring(exists)) end
     if not exists then
-        pcall(filesystem.makeDirectory, DATA_DIR)
+        local makeOK, made, reason = pcall(filesystem.makeDirectory, DATA_DIR)
         local checkOK, created = pcall(filesystem.exists, DATA_DIR)
-        if not checkOK or not created then error("Meadows: Cannot create system directory") end
+        if not checkOK or not created then
+            local detail = makeOK and tostring(reason or made or "filesystem refused the request") or tostring(made)
+            error("Meadows: Cannot create system directory: " .. detail)
+        end
     end
 end
 initializeStorage()
