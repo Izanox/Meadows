@@ -161,6 +161,7 @@ local function render()
   end
 end
 
+local function main()
 render()
 while true do
   local e, _, a, b = computer.pullSignal(5)
@@ -193,6 +194,19 @@ while true do
   elseif e == "key_down" and win and win.onKey then win:onKey(a, b) end
   render()
 end
+end
+local ok, err = xpcall(main, function(m)
+  return tostring(m) .. "\n" .. ((debug and debug.traceback) and debug.traceback() or "")
+end)
+rect(1, 1, W, H, 0x550000)
+local y = 1
+for line in tostring(err):gmatch("[^\n]+") do
+  put(1, y, line:sub(1, W), 0xFFFFFF, 0x550000); y = y + 1
+  if y > H then break end
+end
+put(1, H, "Meadows crashed. Press any key to reboot.", 0xFFFF00, 0x550000)
+repeat local e = computer.pullSignal() until e == "key_down"
+computer.shutdown(true)
 ]==]
 
 ----------------------------------------------------------------------
@@ -259,7 +273,7 @@ local function diskStep()
   local list = {}
   for addr in component.list("filesystem") do
     local p = component.proxy(addr)
-    if not p.isReadOnly() and p.spaceTotal() >= 512 * 1024 and addr ~= computer.tmpAddress() then
+    if not p.isReadOnly() and p.spaceTotal() >= 512 * 1024 and addr ~= (computer.tmpAddress and computer.tmpAddress()) then
       list[#list + 1] = p
     end
   end
@@ -366,5 +380,18 @@ local function finishStep()
 end
 
 local fns = {welcome, diskStep, accountStep, confirmStep, installStep, finishStep}
-local step = 1
-while true do step = fns[step]() or step end
+local ok, err = xpcall(function()
+  local step = 1
+  while true do step = fns[step]() or step end
+end, function(m)
+  return tostring(m) .. "\n" .. ((debug and debug.traceback) and debug.traceback() or "")
+end)
+rect(1, 1, W, H, 0x550000)
+local y = 1
+for line in tostring(err):gmatch("[^\n]+") do
+  put(1, y, line:sub(1, W), 0xFFFFFF, 0x550000); y = y + 1
+  if y > H then break end
+end
+put(1, H, "Installer crashed. Press any key to reboot.", 0xFFFF00, 0x550000)
+repeat local e = computer.pullSignal() until e == "key_down"
+computer.shutdown(true)
