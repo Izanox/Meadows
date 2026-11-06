@@ -1,4 +1,4 @@
--- CHANGE 1.5
+-- CHANGE 2
 --[[
     MEADOWS OS 0.3
     FOREST EDITION
@@ -46,16 +46,20 @@ local ACCOUNTS_FILE = DATA_DIR .. "/accounts.db"
 local NOTES_FILE = DATA_DIR .. "/notes.txt"
 
 local C = {
-    background = 0x101A18,
-    desktop = 0x14231F,
-    panel = 0x1D302A,
-    window = 0x243B33,
-    titlebar = 0x315344,
-    accent = 0x79C99E,
-    text = 0xE5F1E9,
-    muted = 0x91AA9B,
-    close = 0xD96C6C,
-    white = 0xFFFFFF
+    background = 0x0B1511,
+    desktop = 0x102019,
+    panel = 0x172820,
+    panel2 = 0x20382B,
+    window = 0x192B22,
+    titlebar = 0x294B38,
+    accent = 0x72D69A,
+    accentDark = 0x285C3D,
+    text = 0xE8F5EC,
+    muted = 0x9BB5A3,
+    close = 0xE36F70,
+    white = 0xFFFFFF,
+    border = 0x365643,
+    shadow = 0x080E0B
 }
 
 gpu.setDepth(8)
@@ -557,7 +561,7 @@ end
 loginScreen()
 
 -- ==========================================
--- 10. DESKTOP STATE
+-- 10. MODERN WINDOW MANAGER
 -- ==========================================
 
 local windows = {}
@@ -565,34 +569,7 @@ local nextID = 0
 local selected = nil
 local menuOpen = false
 local running = true
-
--- ==========================================
--- 11. WINDOW MANAGER
--- ==========================================
-
-local function newWindow(title, width, height, content)
-    width = math.min(width, W - 2)
-    height = math.min(height, H - 3)
-
-    nextID = nextID + 1
-
-    local win = {
-        id = nextID,
-        title = title,
-        x = math.floor((W - width) / 2),
-        y = math.floor((H - height - 1) / 2) + 1,
-        w = width,
-        h = height,
-        content = content,
-        minimized = false
-    }
-
-    win.x = math.max(1, math.min(win.x, W - width + 1))
-    win.y = math.max(2, math.min(win.y, H - height))
-
-    windows[#windows + 1] = win
-    selected = win.id
-end
+local dragState = nil
 
 local function getWindow(id)
     for i = 1, #windows do
@@ -600,6 +577,10 @@ local function getWindow(id)
             return windows[i], i
         end
     end
+end
+
+local function getSelectedWindow()
+    return getWindow(selected)
 end
 
 local function closeWindow(id)
@@ -613,13 +594,49 @@ end
 
 local function bringToFront(index)
     local win = table.remove(windows, index)
+    windows[#windows + 1] = win
+    selected = win.id
+end
+
+local function newWindow(title, width, height, content)
+    width = math.min(width, W - 4)
+    height = math.min(height, H - 5)
+
+    nextID = nextID + 1
+
+    local win = {
+        id = nextID,
+        title = title,
+        x = math.floor((W - width) / 2),
+        y = math.max(2, math.floor((H - height - 2) / 2)),
+        w = width,
+        h = height,
+        content = content,
+        minimized = false,
+        maximized = false
+    }
 
     windows[#windows + 1] = win
     selected = win.id
 end
 
-local function getSelectedWindow()
-    return getWindow(selected)
+local function maximizeWindow(win)
+    if not win.maximized then
+        win.oldX, win.oldY = win.x, win.y
+        win.oldW, win.oldH = win.w, win.h
+
+        win.x = 2
+        win.y = 2
+        win.w = W - 3
+        win.h = H - 5
+        win.maximized = true
+    else
+        win.x = win.oldX
+        win.y = win.oldY
+        win.w = win.oldW
+        win.h = win.oldH
+        win.maximized = false
+    end
 end
 
 -- ==========================================
@@ -749,46 +766,63 @@ local function openMonitor()
 end
 
 local function openFiles()
-    newWindow("Meadows Files", 46, 16, function(win)
-        put(win.x + 2, win.y + 3, "FILE SYSTEM  /", C.accent)
+    local entries = {}
+    local ok, files = pcall(function()
+        return filesystem.list("/")
+    end)
 
-        local ok, files = pcall(function()
-            return filesystem.list("/")
-        end)
-
-        if not ok or not files then
-            put(win.x + 2, win.y + 5, "Unable to read filesystem.", C.close)
-            return
-        end
-
-        local y = win.y + 5
-        local count = 0
-
+    if ok and files then
         if type(files) == "function" then
             while true do
                 local success, name = pcall(files)
-
                 if not success or not name then break end
-                if y >= win.y + win.h - 1 then break end
-
-                put(win.x + 2, y, tostring(name))
-                y = y + 1
-                count = count + 1
+                entries[#entries + 1] = tostring(name)
             end
-
         elseif type(files) == "table" then
             for _, name in pairs(files) do
-                if y >= win.y + win.h - 1 then break end
-
-                put(win.x + 2, y, tostring(name))
-                y = y + 1
-                count = count + 1
+                entries[#entries + 1] = tostring(name)
             end
         end
+    end
 
-        if count == 0 then
-            put(win.x + 2, y, "Directory is empty.", C.muted)
+    table.sort(entries)
+
+    newWindow("Files", 48, 17, function(win)
+        put(win.x + 2, win.y + 2, "HOME  >  ROOT", C.accent)
+        put(win.x + 2, win.y + 4, "NAME", C.muted)
+        put(win.x + win.w - 12, win.y + 4, "TYPE", C.muted)
+
+        rect(win.x + 1, win.y + 5, win.w - 2, 1, C.border)
+
+        if not ok then
+            put(win.x + 2, win.y + 7, "Filesystem could not be read.", C.close)
+            return
         end
+
+        local row = win.y + 6
+        local shown = 0
+
+        for i = 1, #entries do
+            if row >= win.y + win.h - 1 then break end
+
+            local name = entries[i]
+            local isDirectory = name:sub(-1) == "/"
+
+            put(win.x + 2, row, isDirectory and "[+] " or "[ ]", C.accent)
+            put(win.x + 7, row, name, C.text)
+            put(win.x + win.w - 12, row,
+                isDirectory and "Folder" or "File", C.muted)
+
+            row = row + 1
+            shown = shown + 1
+        end
+
+        if shown == 0 then
+            put(win.x + 2, row + 1, "This directory is empty.", C.muted)
+        end
+
+        put(win.x + 2, win.y + win.h - 1,
+            tostring(#entries) .. " items", C.muted)
     end)
 end
 
@@ -869,24 +903,20 @@ local apps = {
 }
 
 -- ==========================================
--- 15. SHUTDOWN AND LOGOUT
+-- 15. POWER AND LOGOUT
 -- ==========================================
 
 local function shutdown()
     running = false
-
     clear()
     center(math.floor(H / 2), "MEADOWS IS SHUTTING DOWN", C.accent)
-
     computer.shutdown()
 end
 
 local function restart()
     running = false
-
     clear()
     center(math.floor(H / 2), "RESTARTING MEADOWS", C.accent)
-
     computer.shutdown(true)
 end
 
@@ -894,7 +924,7 @@ local function logout()
     windows = {}
     selected = nil
     menuOpen = false
-
+    dragState = nil
     currentUser = nil
 
     loginScreen()
@@ -905,24 +935,37 @@ local function logout()
 end
 
 -- ==========================================
--- 16. WINDOW RENDERING
+-- 16. MODERN WINDOW DRAWING
 -- ==========================================
 
 local function drawWindow(win)
     if win.minimized then return end
 
+    -- Window shadow
+    rect(win.x + 1, win.y + 1, win.w, win.h, C.shadow)
+
+    -- Window body
     rect(win.x, win.y, win.w, win.h, C.window)
 
+    -- Title bar
     rect(
         win.x,
         win.y,
         win.w,
         2,
-        win.id == selected and C.titlebar or C.panel
+        win.id == selected and C.titlebar or C.panel2
     )
 
-    put(win.x + 2, win.y, win.title, C.white)
-    put(win.x + win.w - 3, win.y, "x", C.close)
+    put(win.x + 2, win.y, "◆", C.accent)
+    put(win.x + 4, win.y, win.title, C.white)
+
+    -- Window controls
+    put(win.x + win.w - 9, win.y, "_", C.muted)
+    put(win.x + win.w - 6, win.y, "□", C.accent)
+    put(win.x + win.w - 3, win.y, "X", C.close)
+
+    -- Bottom border
+    rect(win.x, win.y + win.h - 1, win.w, 1, C.border)
 
     if win.content then
         win.content(win)
@@ -930,61 +973,102 @@ local function drawWindow(win)
 end
 
 -- ==========================================
--- 17. DESKTOP DRAWING
+-- 17. MODERN DESKTOP
 -- ==========================================
 
-local function draw()
+local function drawDesktop()
     clear()
 
-    -- Wallpaper
-    rect(1, 1, W, H - 1, C.desktop)
+    -- Forest desktop
+    rect(1, 1, W, H, C.desktop)
 
-    -- Top header
+    -- Top information strip
     rect(1, 1, W, 1, C.panel)
 
     put(3, 1, "MEADOWS", C.accent)
-    put(W - 8, 1, "v" .. VERSION, C.muted)
+    put(12, 1, "FOREST EDITION", C.muted)
+    put(W - 8, 1, VERSION, C.muted)
 
-    -- Desktop applications
-    local y = 4
+    -- Desktop welcome text
+    put(3, 3, "Welcome back,", C.muted)
+    put(3, 4, currentUser.display, C.accent)
+
+    -- Desktop shortcuts
+    local shortcuts = {
+        {name = "Files", symbol = "▣"},
+        {name = "Terminal", symbol = ">"},
+        {name = "Notes", symbol = "▤"},
+        {name = "Monitor", symbol = "◈"},
+        {name = "Settings", symbol = "⚙"},
+        {name = "About", symbol = "i"}
+    }
+
+    local y = 7
+
+    for i = 1, #shortcuts do
+        if y < H - 3 then
+            put(3, y, shortcuts[i].symbol, C.accent)
+            put(7, y, shortcuts[i].name, C.text)
+        end
+
+        y = y + 2
+    end
+end
+
+local function drawStartMenu()
+    local menuY = H - 13
+
+    rect(2, menuY, 27, 11, C.panel)
+    rect(2, menuY, 27, 1, C.accentDark)
+
+    put(4, menuY + 1, "MEADOWS", C.accent)
+    put(19, menuY + 1, "MENU", C.muted)
+
+    rect(3, menuY + 2, 25, 1, C.border)
 
     for i = 1, #apps do
-        if y < H - 1 then
-            put(3, y, "[]", C.accent)
-            put(7, y, apps[i].name, C.text)
-        end
+        local row = menuY + 2 + i
 
-        y = y + 3
+        put(4, row, tostring(i), C.accent)
+        put(7, row, apps[i].name, C.text)
     end
 
-    -- Windows
+    rect(3, menuY + 9, 25, 1, C.border)
+    put(4, menuY + 10, "L  Logout", C.muted)
+    put(18, menuY + 10, "Q  Power", C.close)
+end
+
+local function drawTaskbar()
+    -- Two-row taskbar
+    rect(1, H - 1, W, 2, C.panel)
+
+    -- Start button
+    rect(2, H - 1, 5, 2, menuOpen and C.accentDark or C.panel2)
+    put(4, H, "M", C.accent)
+
+    -- Running application buttons
+    local x = 9
+
     for i = 1, #windows do
-        drawWindow(windows[i])
-    end
+        local win = windows[i]
+        local label = win.title
 
-    -- Start menu
-    if menuOpen then
-        local menuY = math.max(2, H - 15)
-
-        rect(2, menuY, 25, 13, C.panel)
-
-        put(4, menuY + 1, "MEADOWS MENU", C.accent)
-        line(menuY + 2)
-
-        for i = 1, #apps do
-            put(4, menuY + i + 2,
-                tostring(i) .. ". " .. apps[i].name)
+        if #label > 8 then
+            label = label:sub(1, 8)
         end
 
-        put(4, menuY + 10, "L. Logout", C.accent)
-        put(4, menuY + 11, "Q. Shutdown", C.close)
+        local buttonWidth = #label + 3
+
+        if x + buttonWidth < W - 12 then
+            rect(x, H - 1, buttonWidth, 2,
+                win.id == selected and C.accentDark or C.panel2)
+
+            put(x + 1, H, label,
+                win.id == selected and C.white or C.muted)
+
+            x = x + buttonWidth + 1
+        end
     end
-
-    -- Taskbar
-    rect(1, H, W, 1, C.panel)
-
-    put(2, H, "M", C.accent)
-    put(5, H, config.computerName, C.text)
 
     -- Clock
     local uptime = math.floor(computer.uptime())
@@ -995,56 +1079,103 @@ local function draw()
         tostring(uptime % 60) ..
         "s"
 
-    put(W - #clock - 1, H, clock, C.accent)
+    put(W - #clock - 2, H, clock, C.accent)
+end
+
+local function draw()
+    drawDesktop()
+
+    -- Draw windows from back to front
+    for i = 1, #windows do
+        drawWindow(windows[i])
+    end
+
+    if menuOpen then
+        drawStartMenu()
+    end
+
+    -- Always draw the taskbar last
+    drawTaskbar()
 end
 
 -- ==========================================
--- 18. TOUCH HANDLING
+-- 18. MOUSE / TOUCH HANDLING
 -- ==========================================
 
 local function handleTouch(x, y)
     -- Start menu
     if menuOpen then
-        local menuY = math.max(2, H - 15)
+        local menuY = H - 13
 
-        if y >= menuY + 3 and y <= menuY + 2 + #apps then
-            local index = y - menuY - 2
+        if x >= 2 and x <= 29 then
+            if y >= menuY + 3 and y <= menuY + 2 + #apps then
+                local index = y - menuY - 2
 
-            if apps[index] then
-                apps[index].action()
+                if apps[index] then
+                    apps[index].action()
+                end
+
+            elseif y == menuY + 10 then
+                logout()
+
+            elseif y == menuY + 11 then
+                shutdown()
             end
-
-        elseif y == menuY + 10 then
-            logout()
-        elseif y == menuY + 11 then
-            shutdown()
         end
 
         menuOpen = false
         return
     end
 
-    -- Start button
-    if y == H and x <= 3 then
-        menuOpen = true
+    -- Taskbar
+    if y >= H - 1 then
+        if x <= 7 then
+            menuOpen = not menuOpen
+            return
+        end
+
+        local position = 9
+
+        for i = 1, #windows do
+            local win = windows[i]
+            local label = win.title
+
+            if #label > 8 then
+                label = label:sub(1, 8)
+            end
+
+            local width = #label + 3
+
+            if x >= position and x < position + width then
+                if win.minimized then
+                    win.minimized = false
+                end
+
+                local _, index = getWindow(win.id)
+                if index then bringToFront(index) end
+
+                return
+            end
+
+            position = position + width + 1
+        end
+
         return
     end
 
     -- Desktop shortcuts
-    local iconY = 4
+    local yIcon = 7
 
     for i = 1, #apps do
-        if iconY < H - 1 and
-            x >= 3 and x <= 20 and y == iconY then
-
+        if y == yIcon and x >= 3 and x <= 20 then
             apps[i].action()
             return
         end
 
-        iconY = iconY + 3
+        yIcon = yIcon + 2
     end
 
-    -- Windows
+    -- Window interaction
     for i = #windows, 1, -1 do
         local win = windows[i]
 
@@ -1054,9 +1185,38 @@ local function handleTouch(x, y)
 
             bringToFront(i)
 
-            -- Close button
+            -- Close
             if y == win.y and x >= win.x + win.w - 4 then
                 closeWindow(win.id)
+                return
+            end
+
+            -- Maximize / restore
+            if y == win.y and
+                x >= win.x + win.w - 7 and
+                x < win.x + win.w - 4 then
+
+                maximizeWindow(win)
+                return
+            end
+
+            -- Minimize
+            if y == win.y and
+                x >= win.x + win.w - 10 and
+                x < win.x + win.w - 7 then
+
+                win.minimized = true
+                selected = nil
+                return
+            end
+
+            -- Drag title bar
+            if y == win.y or y == win.y + 1 then
+                dragState = {
+                    id = win.id,
+                    offsetX = x - win.x,
+                    offsetY = y - win.y
+                }
             end
 
             return
@@ -1064,12 +1224,28 @@ local function handleTouch(x, y)
     end
 end
 
+local function handleDrag(x, y)
+    if not dragState then return end
+
+    local win = getWindow(dragState.id)
+    if not win or win.maximized then return end
+
+    win.x = math.max(1, math.min(
+        x - dragState.offsetX,
+        W - win.w + 1
+    ))
+
+    win.y = math.max(2, math.min(
+        y - dragState.offsetY,
+        H - win.h - 2
+    ))
+end
+
 -- ==========================================
 -- 19. KEYBOARD HANDLING
 -- ==========================================
 
 local function handleKey(char, code)
-    -- Start menu shortcuts
     if menuOpen then
         if char == 113 or char == 81 then
             shutdown()
@@ -1079,7 +1255,7 @@ local function handleKey(char, code)
             logout()
             return
 
-        elseif char >= 49 and char <= 57 then
+        elseif char and char >= 49 and char <= 57 then
             local index = char - 48
 
             if apps[index] then
@@ -1091,29 +1267,25 @@ local function handleKey(char, code)
         end
     end
 
-    -- M: Open/close start menu
     if char == 109 or char == 77 then
         menuOpen = not menuOpen
         return
     end
 
-    -- Escape: Close menu
     if code == 1 or char == 27 then
         menuOpen = false
+        dragState = nil
         return
     end
 
-    -- Selected application shortcuts
     local win = getSelectedWindow()
 
     if win then
         if win.title == "Meadows Settings" then
             if char == 97 or char == 65 then
                 addUser()
-
             elseif char == 99 or char == 67 then
                 changeComputerName()
-
             elseif char == 112 or char == 80 then
                 changePassword()
             end
@@ -1125,7 +1297,6 @@ local function handleKey(char, code)
         end
     end
 
-    -- Ctrl+Q: Shutdown
     if char == 17 then
         shutdown()
     end
@@ -1138,12 +1309,11 @@ end
 clear()
 
 center(math.floor(H / 2) - 2, "MEADOWS", C.accent)
-center(math.floor(H / 2), "Starting desktop environment...", C.muted)
+center(math.floor(H / 2), "Preparing your forest desktop...", C.muted)
 
 computer.pullSignal(0.5)
 
 openAbout()
-
 draw()
 
 -- ==========================================
@@ -1156,6 +1326,12 @@ while running do
 
     if signal == "touch" then
         handleTouch(p1, p2)
+
+    elseif signal == "drag" then
+        handleDrag(p1, p2)
+
+    elseif signal == "drop" then
+        dragState = nil
 
     elseif signal == "key_down" then
         handleKey(p1, p2)
