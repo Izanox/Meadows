@@ -1,4 +1,4 @@
-
+-- CHANGE 1.0
 --[[
     MEADOWS OS
     Version: 0.1
@@ -89,7 +89,7 @@ for i = 1, 20 do
 
     rect(x, math.floor(H / 2) + 5, width, 1, C.panel, " ")
     rect(x, math.floor(H / 2) + 5, filled, 1, C.accent, " ")
-    os.sleep(0.035)
+    computer.pullSignal(0.035)
 end
 
 -- ==========================================
@@ -291,7 +291,7 @@ local function draw()
     put(2, H, "M", C.accent)
     put(5, H, "Meadows Desktop", C.text)
 
-    local clock = os.date("%H:%M")
+    local clock = computer.uptime()
     put(W - #clock - 1, H, clock, C.accent)
 end
 
