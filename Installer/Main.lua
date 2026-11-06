@@ -15,18 +15,45 @@ local C = {bg = 0x0E1424, panel = 0x151B33, side = 0x1B2340, accent = 0x00C2FF,
 ----------------------------------------------------------------------
 local BOOT = [==[
 local c, k = component, computer
-local e = c.list("eeprom")()
-local a = c.invoke(e, "getData")
-local ok, err = pcall(function()
-  local f = c.proxy(a)
+local st = "start"
+local function die(m)
+  pcall(function()
+    local g = c.proxy(c.list("gpu")())
+    g.bind(c.list("screen")())
+    local w, h = g.getResolution()
+    g.setBackground(0x550000); g.setForeground(0xFFFFFF); g.fill(1, 1, w, h, " ")
+    local y = 1
+    for l in tostring(m):gmatch("[^\n]+") do
+      g.set(1, y, l:sub(1, w)); y = y + 1
+      if y >= h then break end
+    end
+    g.set(1, h, "Meadows boot failed. Press a key to retry.")
+  end)
+  repeat local e = k.pullSignal() until e == "key_down"
+  k.shutdown(true)
+end
+local ok, err = xpcall(function()
+  st = "eeprom"
+  local e = c.list("eeprom")()
+  st = "getData"
+  local a = c.invoke(e, "getData")
+  st = "proxy"
+  local f = assert(c.proxy(a), "bad boot address: " .. tostring(a))
+  st = "open"
   local h = assert(f.open("/init.lua", "rb"))
+  st = "read"
   local d, s = "", nil
   repeat s = f.read(h, math.huge) d = d .. (s or "") until not s
   f.close(h)
+  st = "load"
   if k.setBootAddress then k.setBootAddress(a) end
-  assert(load(d, "=init"))()
+  local fn = assert(load(d, "=init"))
+  st = "run"
+  fn()
+end, function(m)
+  return "[stage: " .. st .. "] " .. tostring(m) .. "\n" .. ((debug and debug.traceback) and debug.traceback() or "")
 end)
-if not ok then error(err, 0) end
+if not ok then die(err) end
 ]==]
 
 local INIT = [==[
