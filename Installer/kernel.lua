@@ -1,4 +1,4 @@
--- CHANGE 1.0
+-- CHANGE 1.1
 --[[
     MEADOWS OS
     Version: 0.1
@@ -383,4 +383,208 @@ while running do
     elseif signal == "interrupted" then
         -- Ignore accidental interrupt
     end
+end
+-- ==========================================
+-- WINDOW DRAWING
+-- ==========================================
+
+local function drawWindow(win)
+    if win.minimized then return end
+
+    rect(win.x, win.y, win.w, win.h, C.window)
+    rect(win.x, win.y, win.w, 2, C.titlebar)
+
+    put(win.x + 2, win.y, win.title, C.white)
+    put(win.x + win.w - 3, win.y, "x", C.close)
+
+    if win.content then
+        win.content(win)
+    end
+end
+
+-- ==========================================
+-- DESKTOP DRAWING
+-- ==========================================
+
+local function draw()
+    clear()
+
+    -- Desktop background
+    rect(1, 1, W, H - 1, C.desktop)
+
+    -- Header
+    rect(1, 1, W, 1, C.panel)
+    put(3, 1, "MEADOWS", C.accent)
+    put(W - 10, 1, "v" .. VERSION, C.muted)
+
+    -- Desktop icons
+    local y = 4
+
+    for i = 1, #apps do
+        if y < H - 2 then
+            put(3, y, "[]", C.accent)
+            put(7, y, apps[i].name, C.text)
+        end
+
+        y = y + 3
+    end
+
+    -- Windows
+    for i = 1, #windows do
+        drawWindow(windows[i])
+    end
+
+    -- Start menu
+    if menuOpen then
+        local menuY = math.max(2, H - 13)
+
+        rect(2, menuY, 23, 11, C.panel)
+        put(4, menuY + 1, "MEADOWS MENU", C.accent)
+
+        for i = 1, #apps do
+            put(4, menuY + i + 2, i .. ". " .. apps[i].name)
+        end
+
+        put(4, menuY + 9, "Q. Shutdown", C.close)
+    end
+
+    -- Taskbar
+    rect(1, H, W, 1, C.panel)
+
+    put(2, H, "M", C.accent)
+    put(5, H, "Meadows Desktop", C.text)
+
+    -- Uptime clock
+    local uptime = math.floor(computer.uptime())
+    local clock = tostring(math.floor(uptime / 60)) ..
+        "m " .. tostring(uptime % 60) .. "s"
+
+    put(W - #clock - 1, H, clock, C.accent)
+end
+
+-- ==========================================
+-- SHUTDOWN
+-- ==========================================
+
+local function shutdown()
+    running = false
+    gpu.setBackground(0x000000)
+    gpu.setForeground(0xFFFFFF)
+    gpu.fill(1, 1, W, H, " ")
+    computer.shutdown()
+end
+
+-- ==========================================
+-- TOUCH EVENTS
+-- ==========================================
+
+local function handleTouch(x, y)
+    -- Start menu interactions
+    if menuOpen then
+        local menuY = math.max(2, H - 13)
+
+        if y >= menuY + 3 and y <= menuY + 7 then
+            local index = y - menuY - 2
+
+            if apps[index] then
+                apps[index].action()
+            end
+
+        elseif y == menuY + 9 then
+            shutdown()
+        end
+
+        menuOpen = false
+        return
+    end
+
+    -- Start button
+    if y == H and x <= 3 then
+        menuOpen = true
+        return
+    end
+
+    -- Desktop icons
+    if x >= 3 and x <= 18 and y >= 4 and y <= 16 then
+        local index = math.floor((y - 4) / 3) + 1
+
+        if apps[index] and (y - 4) % 3 == 0 then
+            apps[index].action()
+            return
+        end
+    end
+
+    -- Window interactions
+    for i = #windows, 1, -1 do
+        local win = windows[i]
+
+        if not win.minimized and
+            x >= win.x and x <= win.x + win.w - 1 and
+            y >= win.y and y < win.y + win.h then
+
+            selected = win.id
+
+            -- Close button
+            if y == win.y and
+                x >= win.x + win.w - 4 then
+
+                closeWindow(win.id)
+                return
+            end
+
+            -- Bring window to front
+            table.remove(windows, i)
+            windows[#windows + 1] = win
+
+            return
+        end
+    end
+end
+
+-- ==========================================
+-- KEYBOARD EVENTS
+-- ==========================================
+
+local function handleKey(char, code)
+    -- Q: Shutdown when menu is open
+    if menuOpen and (char == 113 or char == 81) then
+        shutdown()
+        return
+    end
+
+    -- M: Toggle start menu
+    if char == 109 or char == 77 then
+        menuOpen = not menuOpen
+        return
+    end
+
+    -- Escape: Close start menu
+    if code == 1 then
+        menuOpen = false
+    end
+end
+
+-- ==========================================
+-- STARTUP
+-- ==========================================
+
+openAbout()
+
+draw()
+
+while running do
+    local signal, address, char, code, player =
+        computer.pullSignal(0.2)
+
+    if signal == "touch" then
+        handleTouch(char, code)
+
+    elseif signal == "key_down" then
+        handleKey(char, code)
+
+    elseif signal == "interrupted" then
+        -- Ignore interrupt
+    end
+
+    draw()
 end
