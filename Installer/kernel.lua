@@ -1,6 +1,6 @@
 
 -- =========================================================
--- CHANGE 5
+-- CHANGE 5.1
 -- MEADOWS OS 1.2
 -- FOREST EDITION
 -- PART 1 OF 4
@@ -138,6 +138,8 @@ local function bootSplash()
     local frames = {"|", "/", "-", "\\"}
 
     for frame = 1, 24 do
+        gpu.setForeground(C.white)
+        gpu.setBackground(C.background)
         clear(C.background)
 
         local logoX = math.floor(W / 2) - 4
@@ -2570,12 +2572,27 @@ local desktopIcons = {
     {id = "about", name = "About", x = 4, y = 16}
 }
 
-local function drawDesktopIcon(icon)
-    rect(icon.x, icon.y, 7, 3, C.panel2)
-    rect(icon.x + 2, icon.y + 1, 3, 1, C.accentDark)
+local function drawDesktopIcon(icon, selected)
+    local background = selected and C.accentDark or C.panel2
 
-    put(icon.x + 1, icon.y + 1, icon.id:sub(1, 1):upper(), C.white)
-    put(icon.x - 1, icon.y + 3, icon.name, C.text)
+    rect(icon.x, icon.y, 7, 3, background)
+
+    rect(
+        icon.x + 2,
+        icon.y + 1,
+        3,
+        1,
+        selected and C.accent or C.accentDark
+    )
+
+    put(icon.x + 1, icon.y + 1,
+        icon.id:sub(1, 1):upper(), C.white)
+
+    if selected then
+        rect(icon.x - 1, icon.y + 3, #icon.name + 2, 1, C.accentDark)
+    end
+
+    put(icon.x, icon.y + 3, icon.name, C.text)
 end
 
 local function taskbarLayout()
@@ -2616,6 +2633,7 @@ local function drawTaskbar()
     return items, layout
 end
 
+local selectedDesktopIcon = nil
 local function drawDesktop()
     clear(getWallpaper())
 
@@ -2624,7 +2642,10 @@ local function drawDesktop()
     put(4, 3, "FOREST EDITION", C.white)
 
     for i = 1, #desktopIcons do
-        drawDesktopIcon(desktopIcons[i])
+        drawDesktopIcon(
+            desktopIcons[i],
+            selectedDesktopIcon == i
+        )
     end
 
     put(4, H - 4, "Welcome, " .. currentUser.displayName, C.white)
@@ -2666,12 +2687,20 @@ local function desktop()
             end
 
         elseif signal == "touch" then
+            -- Ensure touch coordinates are numbers.
+            x = tonumber(x) or 0
+            y = tonumber(y) or 0
+
             local taskItems, layout = drawTaskbar()
 
+            -- Ensure taskbar layout values are numbers.
+            local startX = tonumber(layout.startX) or 1
+            local spacing = tonumber(layout.spacing) or 8
+
             -- Taskbar buttons.
-            if y >= H - 2 then
+            if y >= (tonumber(H) or 16) - 2 then
                 for i = 1, #taskItems do
-                    local buttonX = layout.startX + (i - 1) * layout.spacing
+                    local buttonX = startX + (i - 1) * spacing
 
                     if x >= buttonX and x <= buttonX + 4 then
                         local id = taskItems[i].id
@@ -2685,6 +2714,7 @@ local function desktop()
                         break
                     end
                 end
+            end
 
             else
                 -- Desktop icons.
@@ -2696,6 +2726,8 @@ local function desktop()
                         y >= icon.y and
                         y <= icon.y + 4 then
 
+                        selectedDesktopIcon = i
+                        drawDesktop()
                         launchApp(icon.id)
                         break
                     end
@@ -2711,7 +2743,12 @@ end
 
 clear(C.background)
 
+gpu.setBackground(C.background)
+gpu.setForeground(C.accent)
+
 center(H - 2, "Loading Meadows desktop...", C.accent)
+
 computer.pullSignal(0.5)
 
+clear(getWallpaper())
 desktop()
