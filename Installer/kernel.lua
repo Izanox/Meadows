@@ -1,46 +1,38 @@
 
--- ==========================================
--- CHANGE 4.5
--- MEADOWS OS 1.1
--- WINDOWS 11 + FOREST EDITION
--- Native OpenComputers BIOS Kernel
--- ==========================================
-
--- ==========================================
--- 1. HARDWARE AND BOOT SPLASH
--- ==========================================
+-- =========================================================
+-- CHANGE 5
+-- MEADOWS OS 1.2
+-- FOREST EDITION
+-- PART 1 OF 4
+-- Hardware, boot splash and persistent storage
+-- =========================================================
 
 local gpuAddress = component.list("gpu")()
 local screenAddress = component.list("screen")()
 
 if not gpuAddress or not screenAddress then
-    error("Meadows: GPU or screen missing")
+    error("Meadows: GPU or screen not found.")
 end
 
 local gpu = component.proxy(gpuAddress)
 local computer = computer
-gpu.bind(screenAddress)
+
+local bound, bindError = pcall(gpu.bind, screenAddress)
+if not bound then
+    error("Meadows: Could not bind screen: " .. tostring(bindError))
+end
 
 local W, H = gpu.getResolution()
 
 if W < 40 or H < 16 then
-    error("Meadows: Minimum resolution is 40x16")
+    error("Meadows: Screen must be at least 40x16.")
 end
 
-gpu.setDepth(8)
+pcall(gpu.setDepth, 8)
 
-local DATA_DIR = "/.meadows"
-local CONFIG_FILE = DATA_DIR .. "/system.cfg"
-local ACCOUNTS_FILE = DATA_DIR .. "/accounts.db"
-local NOTES_FILE = DATA_DIR .. "/notes.txt"
-local STORAGE_ID_FILE = DATA_DIR .. "/storage.id"
-
-local bootAddress = nil
-
-if computer.getBootAddress then
-    local ok, address = pcall(computer.getBootAddress)
-    if ok then bootAddress = address end
-end
+local VERSION = "1.2"
+local OS_NAME = "Meadows"
+local MAX_WINDOWS = 2
 
 local C = {
     background = 0x0B1511,
@@ -55,347 +47,42 @@ local C = {
     muted = 0x9BB5A3,
     close = 0xE36F70,
     white = 0xFFFFFF,
-    border = 0x365643,
-    shadow = 0x080E0B
+    border = 0x365643
 }
 
--- ==========================================
--- 2. WINDOWS-INSPIRED BOOT ANIMATION
--- ==========================================
-
-local function bootSplash()
-    local frames = {"|", "/", "-", "\\"}
-
-    for frame = 1, 20 do
-        gpu.setBackground(C.background)
-        gpu.setForeground(C.text)
-        gpu.fill(1, 1, W, H, " ")
-
-        local logoX = math.floor(W / 2) - 4
-        local logoY = math.floor(H / 2) - 5
-
-        -- Meadows four-part logo
-        gpu.setBackground(C.accentDark)
-        gpu.fill(logoX, logoY, 3, 2, " ")
-        gpu.fill(logoX + 4, logoY, 3, 2, " ")
-
-        gpu.setBackground(C.accent)
-        gpu.fill(logoX, logoY + 3, 3, 2, " ")
-        gpu.fill(logoX + 4, logoY + 3, 3, 2, " ")
-
-        gpu.setBackground(C.background)
-        gpu.setForeground(C.white)
-
-        local name = "MEADOWS"
-        gpu.set(math.floor((W - #name) / 2) + 1,
-            logoY + 6, name)
-
-        gpu.setForeground(C.muted)
-        local edition = "FOREST EDITION"
-        gpu.set(math.floor((W - #edition) / 2) + 1,
-            logoY + 8, edition)
-
-        gpu.setForeground(C.accent)
-        local loading = "Starting Meadows " ..
-            frames[(frame - 1) % #frames + 1]
-
-        gpu.set(math.floor((W - #loading) / 2) + 1,
-            H - 3, loading)
-
-        gpu.setForeground(C.muted)
-        gpu.set(math.floor((W - 13) / 2) + 1,
-            H - 1, "VERSION 1.1")
-
-        computer.pullSignal(0.1)
-    end
-end
-
-bootSplash()
-
--- ==========================================
--- 3. FILESYSTEM DISCOVERY
--- ==========================================
-
-local function fsExists(fs, path)
-    local ok, result = pcall(fs.exists, path)
-    return ok and result == true
-end
-
-local function fsRead(fs, path)
-    local ok, handle = pcall(fs.open, path, "r")
-    if not ok or not handle then return nil end
-
-    local result = ""
-
-    while true do
-        local readOK, data = pcall(fs.read, handle, 4096)
-
-        if not readOK or not data or #data == 0 then
-            break
-        end
-
-        result = result .. data
-    end
-
-    pcall(fs.close, handle)
-    return result
-end
-
-local function fsWrite(fs, path, data)
-    local ok, handle = pcall(fs.open, path, "w")
-    if not ok or not handle then return false end
-
-    local writeOK, result = pcall(fs.write, handle, data)
-    pcall(fs.close, handle)
-
-    if not writeOK or result == false then
-        return false
-    end
-
-    return fsRead(fs, path) == data
-end
-
-local filesystems = {}
-
-for address in component.list("filesystem") do
-    -- Never use the filesystem we booted from as permanent storage.
-    if address ~= bootAddress then
-        local ok, fs = pcall(component.proxy, address)
-
-        if ok and fs then
-            local readOnly = true
-
-            if fs.isReadOnly then
-                local roOK, value = pcall(fs.isReadOnly)
-                if roOK then readOnly = value end
-            end
-
-            local total = 0
-            local used = 0
-            local label = "Unnamed drive"
-
-            if fs.spaceTotal then
-                local good, value = pcall(fs.spaceTotal)
-                if good then total = tonumber(value) or 0 end
-            end
-
-            if fs.spaceUsed then
-                local good, value = pcall(fs.spaceUsed)
-                if good then used = tonumber(value) or 0 end
-            end
-
-            if fs.getLabel then
-                local good, value = pcall(fs.getLabel)
-                if good and value and value ~= "" then
-                    label = tostring(value)
-                end
-            end
-
-            filesystems[#filesystems + 1] = {
-                address = address,
-                fs = fs,
-                label = label,
-                readOnly = readOnly,
-                total = total,
-                used = used
-            }
-        end
-    end
-end
-
-if #filesystems == 0 then
-    error("Meadows: No storage drives found. Install a hard drive.")
-end
-
--- ==========================================
--- 4. DRIVE SELECTION SCREEN
--- ==========================================
-
-local function chooseStorage()
-    local choice = 1
-    local scroll = 0
-
-    while true do
-        gpu.setBackground(C.background)
-        gpu.setForeground(C.text)
-        gpu.fill(1, 1, W, H, " ")
-
-        gpu.setForeground(C.accent)
-        local title = "WELCOME TO MEADOWS SETUP"
-        gpu.set(math.floor((W - #title) / 2) + 1, 2, title)
-
-        gpu.setForeground(C.white)
-        local subtitle = "Choose your Meadows installation drive"
-        gpu.set(math.floor((W - #subtitle) / 2) + 1, 4, subtitle)
-
-        gpu.setForeground(C.muted)
-        gpu.set(3, 6, "Select a writable hard drive:")
-
-        local visible = math.max(1, H - 10)
-
-        if choice <= scroll then
-            scroll = choice - 1
-        elseif choice > scroll + visible then
-            scroll = choice - visible
-        end
-
-        for row = 1, visible do
-            local index = scroll + row
-            local disk = filesystems[index]
-
-            if not disk then break end
-
-            local y = 7 + row
-            local free = math.max(0, disk.total - disk.used)
-
-            if index == choice then
-                gpu.setBackground(C.accentDark)
-            else
-                gpu.setBackground(C.panel)
-            end
-
-            gpu.fill(3, y, W - 6, 1, " ")
-
-            gpu.setForeground(disk.readOnly and C.muted or C.white)
-
-            local capacity
-
-            if disk.total > 0 then
-                capacity = tostring(math.floor(free / 1024)) ..
-                    " KB free / " ..
-                    tostring(math.floor(disk.total / 1024)) .. " KB"
-            else
-                capacity = "Capacity unknown"
-            end
-
-            local state = disk.readOnly and "READ ONLY" or "AVAILABLE"
-
-            local entry = tostring(index) .. ". " ..
-                disk.label .. " | " .. capacity .. " | " .. state
-
-            gpu.set(4, y, entry:sub(1, W - 8))
-        end
-
-        gpu.setBackground(C.background)
-        gpu.setForeground(C.accent)
-        gpu.set(3, H - 3, "UP/DOWN: Select    ENTER: Confirm")
-
-        gpu.setForeground(C.muted)
-        gpu.set(3, H - 1, "Your accounts, settings and notes will be saved here.")
-
-        local signal, address, char, code = computer.pullSignal()
-
-        if signal == "key_down" then
-            if code == 200 then
-                choice = math.max(1, choice - 1)
-
-            elseif code == 208 then
-                choice = math.min(#filesystems, choice + 1)
-
-            elseif char and char >= 49 and char <= 57 then
-                local number = char - 48
-                if filesystems[number] then
-                    choice = number
-                end
-
-            elseif code == 28 or char == 13 then
-                local disk = filesystems[choice]
-
-                if disk and not disk.readOnly then
-                    return disk
-                end
-            end
-        end
-    end
-end
-
--- ==========================================
--- 5. RESTORE PREVIOUSLY SELECTED DRIVE
--- ==========================================
-
-local selectedDisk = nil
-
-for _, disk in ipairs(filesystems) do
-    if not disk.readOnly and fsExists(disk.fs, STORAGE_ID_FILE) then
-        local savedAddress = fsRead(disk.fs, STORAGE_ID_FILE)
-
-        if savedAddress then
-            savedAddress = savedAddress:gsub("%s+", "")
-
-            if savedAddress == disk.address then
-                selectedDisk = disk
-                break
-            end
-        end
-    end
-end
-
--- If no saved drive exists, ask the user.
-if not selectedDisk then
-    selectedDisk = chooseStorage()
-end
-
-if not selectedDisk or selectedDisk.readOnly then
-    error("Meadows: Selected drive is unavailable or read-only.")
-end
-
-local fsAddress = selectedDisk.address
-local filesystem = selectedDisk.fs
-local STORAGE_ADDRESS = fsAddress
-
--- ==========================================
--- 6. INITIALIZE PERSISTENT STORAGE
--- ==========================================
-
-local existsOK, directoryExists = pcall(filesystem.exists, DATA_DIR)
-
-if not existsOK then
-    error("Meadows: Cannot inspect selected drive.")
-end
-
-if not directoryExists then
-    local makeOK = pcall(filesystem.makeDirectory, DATA_DIR)
-
-    if not makeOK or not fsExists(filesystem, DATA_DIR) then
-        error("Meadows: Cannot create system directory on selected drive.")
-    end
-end
-
--- Test actual writing before saving user data.
-local testPath = DATA_DIR .. "/storage-test.tmp"
-
-if not fsWrite(filesystem, testPath, "MEADOWS STORAGE TEST") then
-    error("Meadows: Selected drive failed its write test.")
-end
-
-pcall(filesystem.remove, testPath)
-
--- Save the selected drive's identity.
-if not fsWrite(filesystem, STORAGE_ID_FILE, fsAddress) then
-    error("Meadows: Could not save storage identity.")
-end
-
--- ==========================================
--- 7. CONFIGURATION AND GRAPHICS
--- ==========================================
-
-local OS_NAME = "Meadows"
-local VERSION = "1.1"
-local MAX_WINDOWS = 2
-
-gpu.setDepth(8)
-gpu.setBackground(C.background)
-gpu.setForeground(C.text)
-gpu.fill(1, 1, W, H, " ")
+local DATA_DIR = "/.meadows"
+local CONFIG_FILE = DATA_DIR .. "/system.cfg"
+local ACCOUNTS_FILE = DATA_DIR .. "/accounts.db"
+local NOTES_FILE = DATA_DIR .. "/notes.txt"
+local STORAGE_ID_FILE = DATA_DIR .. "/storage.id"
+
+-- ---------------------------------------------------------
+-- Graphics helpers
+-- ---------------------------------------------------------
 
 local function rect(x, y, w, h, color)
-    x, y, w, h = math.floor(x), math.floor(y),
-        math.floor(w), math.floor(h)
+    x = math.floor(x)
+    y = math.floor(y)
+    w = math.floor(w)
+    h = math.floor(h)
 
-    if x < 1 then w, x = w - (1 - x), 1 end
-    if y < 1 then h, y = h - (1 - y), 1 end
-    if x + w - 1 > W then w = W - x + 1 end
-    if y + h - 1 > H then h = H - y + 1 end
+    if x < 1 then
+        w = w - (1 - x)
+        x = 1
+    end
+
+    if y < 1 then
+        h = h - (1 - y)
+        y = 1
+    end
+
+    if x + w - 1 > W then
+        w = W - x + 1
+    end
+
+    if y + h - 1 > H then
+        h = H - y + 1
+    end
 
     if w <= 0 or h <= 0 then return end
 
@@ -405,13 +92,14 @@ end
 
 local function put(x, y, value, color)
     value = tostring(value or "")
+    x = math.floor(x)
+    y = math.floor(y)
 
-    if y < 1 or y > H or x > W or x + #value - 1 < 1 then
-        return
-    end
+    if y < 1 or y > H or x > W then return end
 
     if x < 1 then
-        value, x = value:sub(2 - x), 1
+        value = value:sub(2 - x)
+        x = 1
     end
 
     if x + #value - 1 > W then
@@ -429,106 +117,405 @@ local function center(y, value, color)
     put(math.floor((W - #value) / 2) + 1, y, value, color)
 end
 
-local function clear()
-    rect(1, 1, W, H, C.background)
+local function clear(color)
+    rect(1, 1, W, H, color or C.background)
 end
 
-local function line(y)
-    rect(2, y, W - 2, 1, C.titlebar)
+local function waitForKey()
+    while true do
+        local signal = computer.pullSignal()
+        if signal == "key_down" then
+            return
+        end
+    end
 end
 
--- ==========================================
--- 8. FILE STORAGE
--- ==========================================
+-- ---------------------------------------------------------
+-- Meadows boot splash
+-- ---------------------------------------------------------
+
+local function bootSplash()
+    local frames = {"|", "/", "-", "\\"}
+
+    for frame = 1, 24 do
+        clear(C.background)
+
+        local logoX = math.floor(W / 2) - 4
+        local logoY = math.floor(H / 2) - 4
+
+        rect(logoX, logoY, 3, 2, C.accentDark)
+        rect(logoX + 4, logoY, 3, 2, C.accentDark)
+        rect(logoX, logoY + 3, 3, 2, C.accent)
+        rect(logoX + 4, logoY + 3, 3, 2, C.accent)
+
+        center(logoY + 6, "MEADOWS", C.white)
+        center(logoY + 8, "FOREST EDITION", C.accent)
+
+        local spinner = frames[(frame - 1) % #frames + 1]
+        center(H - 3, "Starting Meadows EFI " .. spinner, C.muted)
+        center(H - 1, "VERSION " .. VERSION, C.muted)
+
+        computer.pullSignal(0.12)
+    end
+end
+
+bootSplash()
+
+-- ---------------------------------------------------------
+-- Filesystem helpers
+-- ---------------------------------------------------------
+
+local function fsExists(fs, path)
+    local ok, result = pcall(fs.exists, path)
+    return ok and result == true
+end
+
+local function fsRead(fs, path)
+    local ok, handle = pcall(fs.open, path, "r")
+    if not ok or not handle then return nil end
+
+    local chunks = {}
+
+    while true do
+        local readOK, data = pcall(fs.read, handle, 4096)
+
+        if not readOK or not data or #data == 0 then
+            break
+        end
+
+        chunks[#chunks + 1] = data
+    end
+
+    pcall(fs.close, handle)
+    return table.concat(chunks)
+end
+
+local function fsWrite(fs, path, data)
+    data = tostring(data or "")
+
+    local ok, handle = pcall(fs.open, path, "w")
+    if not ok or not handle then
+        return false, "Could not open file for writing."
+    end
+
+    local writeOK, result = pcall(fs.write, handle, data)
+    local closeOK = pcall(fs.close, handle)
+
+    if not writeOK or result == false or not closeOK then
+        return false, "Could not write file."
+    end
+
+    local check = fsRead(fs, path)
+
+    if check ~= data then
+        return false, "Storage verification failed."
+    end
+
+    return true
+end
+
+-- ---------------------------------------------------------
+-- Discover writable filesystems
+-- ---------------------------------------------------------
+
+local drives = {}
+
+for address in component.list("filesystem") do
+    local proxyOK, fs = pcall(component.proxy, address)
+
+    if proxyOK and fs then
+        local readOnly = true
+
+        if fs.isReadOnly then
+            local ok, value = pcall(fs.isReadOnly)
+            if ok then readOnly = value == true end
+        end
+
+        local total = 0
+        local used = 0
+        local label = "Unnamed"
+
+        if fs.spaceTotal then
+            local ok, value = pcall(fs.spaceTotal)
+            if ok then total = tonumber(value) or 0 end
+        end
+
+        if fs.spaceUsed then
+            local ok, value = pcall(fs.spaceUsed)
+            if ok then used = tonumber(value) or 0 end
+        end
+
+        if fs.getLabel then
+            local ok, value = pcall(fs.getLabel)
+            if ok and value and value ~= "" then
+                label = tostring(value)
+            end
+        end
+
+        if not readOnly then
+            drives[#drives + 1] = {
+                address = address,
+                fs = fs,
+                label = label,
+                total = total,
+                used = used,
+                readOnly = false
+            }
+        end
+    end
+end
+
+if #drives == 0 then
+    error("Meadows: No writable filesystem found.")
+end
+
+-- ---------------------------------------------------------
+-- Drive selection
+-- ---------------------------------------------------------
+
+local function chooseStorage()
+    local choice = 1
+
+    while true do
+        clear()
+
+        center(2, "MEADOWS INSTALLATION", C.accent)
+        center(4, "Choose where Meadows will store its data.", C.white)
+
+        for i = 1, #drives do
+            local disk = drives[i]
+            local y = 7 + (i - 1) * 2
+
+            if y < H - 4 then
+                if i == choice then
+                    rect(3, y, W - 6, 1, C.accentDark)
+                end
+
+                local free = math.max(0, disk.total - disk.used)
+                local capacity = disk.total > 0
+                    and (math.floor(free / 1024) .. " KB free")
+                    or "Capacity unknown"
+
+                put(4, y,
+                    tostring(i) .. ". " .. disk.label ..
+                    " | " .. capacity,
+                    C.white)
+            end
+        end
+
+        center(H - 2, "UP/DOWN: Select     ENTER: Confirm", C.accent)
+
+        local signal, address, char, code = computer.pullSignal()
+
+        if signal == "key_down" then
+            if code == 200 then
+                choice = math.max(1, choice - 1)
+
+            elseif code == 208 then
+                choice = math.min(#drives, choice + 1)
+
+            elseif code == 28 or char == 13 then
+                return drives[choice]
+            end
+        end
+    end
+end
+
+-- Prefer a drive with an existing Meadows installation.
+local selectedDisk = nil
+
+for i = 1, #drives do
+    if fsExists(drives[i].fs, DATA_DIR) and
+        fsExists(drives[i].fs, STORAGE_ID_FILE) then
+
+        local saved = fsRead(drives[i].fs, STORAGE_ID_FILE)
+
+        if saved and saved:gsub("%s+", "") == drives[i].address then
+            selectedDisk = drives[i]
+            break
+        end
+    end
+end
+
+if not selectedDisk then
+    selectedDisk = chooseStorage()
+end
+
+if not selectedDisk then
+    error("Meadows: No installation drive selected.")
+end
+
+local filesystem = selectedDisk.fs
+local STORAGE_ADDRESS = selectedDisk.address
+
+-- ---------------------------------------------------------
+-- Set drive label
+-- ---------------------------------------------------------
+
+if filesystem.setLabel then
+    local ok, result = pcall(filesystem.setLabel, "Meadows")
+
+    if not ok or result == false then
+        -- Some filesystems do not support changing labels.
+        -- Installation can still continue.
+    end
+end
+
+-- ---------------------------------------------------------
+-- Initialize Meadows storage
+-- ---------------------------------------------------------
+
+if not fsExists(filesystem, DATA_DIR) then
+    local ok, result = pcall(filesystem.makeDirectory, DATA_DIR)
+
+    if not ok or result == false or
+        not fsExists(filesystem, DATA_DIR) then
+        error("Meadows: Could not create system directory.")
+    end
+end
+
+local testOK = fsWrite(
+    filesystem,
+    DATA_DIR .. "/storage-test.tmp",
+    "MEADOWS STORAGE TEST"
+)
+
+if not testOK then
+    error("Meadows: Storage write test failed.")
+end
+
+pcall(filesystem.remove, DATA_DIR .. "/storage-test.tmp")
+
+local identityOK = fsWrite(
+    filesystem,
+    STORAGE_ID_FILE,
+    STORAGE_ADDRESS
+)
+
+if not identityOK then
+    error("Meadows: Could not save drive identity.")
+end
 
 local function readFile(path)
     return fsRead(filesystem, path)
 end
 
 local function writeFile(path, data)
-    return fsWrite(filesystem, path, tostring(data or ""))
+    return fsWrite(filesystem, path, data)
 end
-
-local function initializeStorage()
-    if not fsExists(filesystem, DATA_DIR) then
-        local ok = pcall(filesystem.makeDirectory, DATA_DIR)
-
-        if not ok or not fsExists(filesystem, DATA_DIR) then
-            error("Meadows: Storage initialization failed.")
-        end
-    end
-end
-
-initializeStorage()
-
--- ==========================================
--- 9. CONFIGURATION DATABASE
--- ==========================================
+-- ---------------------------------------------------------
+-- Configuration
+-- ---------------------------------------------------------
 
 local config = {
+    computerName = "Meadows-PC",
+    wallpaper = 1,
+    username = "",
+    displayName = "",
     setupComplete = false,
-    computerName = "MEADOWS-PC",
-    theme = "forest"
+    version = VERSION
 }
+
+local function cleanValue(value)
+    value = tostring(value or "")
+    value = value:gsub("[\r\n]", "")
+    value = value:gsub("|", "")
+    value = value:gsub("=", "")
+    return value
+end
+
+local function saveConfig()
+    local data = {
+        "computerName=" .. cleanValue(config.computerName),
+        "wallpaper=" .. cleanValue(config.wallpaper),
+        "username=" .. cleanValue(config.username),
+        "displayName=" .. cleanValue(config.displayName),
+        "setupComplete=" .. tostring(config.setupComplete),
+        "version=" .. cleanValue(config.version)
+    }
+
+    return writeFile(CONFIG_FILE, table.concat(data, "\n"))
+end
 
 local function loadConfig()
     local data = readFile(CONFIG_FILE)
     if not data then return end
 
-    for key, value in data:gmatch("([%w_]+)=([^\r\n]*)") do
-        if key == "setupComplete" then
-            config.setupComplete = value == "true"
-        elseif key == "computerName" then
-            config.computerName = value
-        elseif key == "theme" then
-            config.theme = value
+    for line in data:gmatch("[^\r\n]+") do
+        local key, value = line:match("^([^=]+)=(.*)$")
+
+        if key and value then
+            if key == "computerName" then
+                config.computerName = value
+
+            elseif key == "wallpaper" then
+                config.wallpaper = tonumber(value) or 1
+
+            elseif key == "username" then
+                config.username = value
+
+            elseif key == "displayName" then
+                config.displayName = value
+
+            elseif key == "setupComplete" then
+                config.setupComplete = value == "true"
+
+            elseif key == "version" then
+                config.version = value
+            end
         end
     end
 end
 
-local function saveConfig()
-    return writeFile(CONFIG_FILE,
-        "setupComplete=" .. tostring(config.setupComplete) .. "\n" ..
-        "computerName=" .. config.computerName .. "\n" ..
-        "theme=" .. config.theme .. "\n")
-end
-
 loadConfig()
 
--- ==========================================
--- 10. ACCOUNT DATABASE
--- ==========================================
+-- ---------------------------------------------------------
+-- Password hashing
+-- ---------------------------------------------------------
+
+-- This is a lightweight local hash for a game OS prototype.
+-- It is NOT secure cryptographic password storage.
+
+local function hashPassword(password)
+    local hash = 5381
+
+    password = tostring(password or "")
+
+    for i = 1, #password do
+        hash = (hash * 33 + password:byte(i)) % 2147483647
+    end
+
+    return tostring(hash)
+end
+
+local function verifyPassword(password, savedHash)
+    return hashPassword(password) == tostring(savedHash or "")
+end
+
+-- ---------------------------------------------------------
+-- Account database
+-- ---------------------------------------------------------
 
 local accounts = {}
 
-local function cleanField(value)
-    return tostring(value or ""):gsub("[|\r\n]", "")
-end
-
--- Prototype hash only; not cryptographically secure.
-local function hashPassword(password, salt)
-    local hash = 5381
-    local input = salt .. password
-
-    for i = 1, #input do
-        hash = (hash * 33 + input:byte(i)) % 2147483647
-    end
-
-    return tostring(math.floor(hash))
-end
-
 local function saveAccounts()
-    local output = ""
+    local lines = {}
 
     for i = 1, #accounts do
-        local a = accounts[i]
+        local account = accounts[i]
 
-        output = output .. a.username .. "|" ..
-            a.display .. "|" .. a.salt .. "|" ..
-            a.hash .. "\n"
+        local username = cleanValue(account.username)
+        local displayName = cleanValue(account.displayName)
+        local passwordHash = cleanValue(account.passwordHash)
+
+        lines[#lines + 1] = table.concat({
+            username,
+            displayName,
+            passwordHash
+        }, "|")
     end
 
-    return writeFile(ACCOUNTS_FILE, output)
+    return writeFile(ACCOUNTS_FILE, table.concat(lines, "\n"))
 end
 
 local function loadAccounts()
@@ -537,16 +524,15 @@ local function loadAccounts()
     local data = readFile(ACCOUNTS_FILE)
     if not data then return end
 
-    for entry in data:gmatch("[^\r\n]+") do
-        local username, display, salt, hash =
-            entry:match("^([^|]*)|([^|]*)|([^|]*)|([^|]*)$")
+    for line in data:gmatch("[^\r\n]+") do
+        local username, displayName, passwordHash =
+            line:match("^([^|]+)|([^|]*)|([^|]+)$")
 
-        if username and display and salt and hash then
+        if username and passwordHash then
             accounts[#accounts + 1] = {
                 username = username,
-                display = display,
-                salt = salt,
-                hash = hash
+                displayName = displayName,
+                passwordHash = passwordHash
             }
         end
     end
@@ -559,108 +545,84 @@ local function findAccount(username)
 
     for i = 1, #accounts do
         if accounts[i].username:lower() == username then
-            return accounts[i]
+            return accounts[i], i
         end
     end
 
     return nil
 end
 
-local function createAccount(username, display, password)
-    username = cleanField(username)
-    display = cleanField(display)
-    password = tostring(password or "")
-
-    if #username < 3 or #password < 4 then
-        return false, "Username or password too short."
+local function validUsername(username)
+    if #username < 3 or #username > 16 then
+        return false
     end
 
-    if username:find("[^%w_]") then
-        return false, "Use only letters, numbers and underscores."
+    return username:match("^[a-zA-Z0-9_]+$") ~= nil
+end
+
+local function createAccount(username, displayName, password)
+    username = tostring(username or ""):lower()
+    displayName = tostring(displayName or "")
+    password = tostring(password or "")
+
+    if not validUsername(username) then
+        return false, "Username must be 3-16 letters, numbers or underscores."
     end
 
     if findAccount(username) then
         return false, "That username already exists."
     end
 
-    local salt = tostring(math.floor(computer.uptime() * 1000)) ..
-        tostring(#accounts + 1)
+    if #displayName < 1 or #displayName > 24 then
+        return false, "Display name must be 1-24 characters."
+    end
+
+    if #password < 1 then
+        return false, "Password cannot be empty."
+    end
 
     accounts[#accounts + 1] = {
         username = username,
-        display = display,
-        salt = salt,
-        hash = hashPassword(password, salt)
+        displayName = cleanValue(displayName),
+        passwordHash = hashPassword(password)
     }
 
-    if not saveAccounts() then
+    local success, reason = saveAccounts()
+
+    if not success then
         accounts[#accounts] = nil
-        return false, "Could not save account database."
+        return false, reason or "Could not save account."
     end
 
     return true
 end
 
-local function verifyPassword(account, password)
-    if not account then return false end
+-- ---------------------------------------------------------
+-- Input dialog
+-- ---------------------------------------------------------
 
-    return hashPassword(
-        tostring(password or ""), account.salt
-    ) == account.hash
-end
-
--- ==========================================
--- 11. INPUT AND MESSAGE DIALOGS
--- ==========================================
-
-local function inputDialog(prompt, secret, multiline)
+local function inputDialog(title, prompt, secret)
     local value = ""
-
-    local panelW = math.min(W - 4, 50)
-    local panelH = multiline and math.min(H - 4, 12) or 8
-
-    local panelX = math.floor((W - panelW) / 2)
-    local panelY = math.floor((H - panelH) / 2)
-
-    local function drawDialog()
-        rect(panelX, panelY, panelW, panelH, C.panel)
-        rect(panelX, panelY, panelW, 2, C.titlebar)
-        rect(panelX, panelY, panelW, 1, C.accentDark)
-
-        put(panelX + 2, panelY, "MEADOWS", C.accent)
-        put(panelX + panelW - 4, panelY, "X", C.close)
-        put(panelX + 2, panelY + 3, prompt, C.text)
-
-        rect(panelX + 2, panelY + 4,
-            panelW - 4, multiline and 4 or 1, C.panel2)
-
-        if multiline then
-            local lines = {}
-
-            for textLine in (value .. "\n"):gmatch("(.-)\n") do
-                lines[#lines + 1] = textLine
-            end
-
-            local first = math.max(1, #lines - 3)
-
-            for i = first, #lines do
-                put(panelX + 3, panelY + 4 + i - first,
-                    lines[i], C.white)
-            end
-        else
-            local shown = secret and
-                string.rep("*", #value) or value
-
-            put(panelX + 3, panelY + 4, shown .. "_", C.white)
-        end
-
-        put(panelX + 2, panelY + panelH - 1,
-            multiline and "CTRL+S: Save   ESC: Cancel" or
-            "ENTER: Confirm   ESC: Cancel", C.muted)
-    end
+    local cursor = 1
 
     while true do
-        drawDialog()
+        clear(C.background)
+
+        rect(3, 3, W - 6, H - 6, C.panel)
+        rect(3, 3, W - 6, 1, C.titlebar)
+
+        put(5, 3, title, C.white)
+        put(5, 6, prompt, C.muted)
+
+        rect(5, 8, W - 10, 3, C.background)
+
+        local shown = secret and string.rep("*", #value) or value
+
+        put(6, 9, shown, C.white)
+        put(6 + #shown, 9, "_", C.accent)
+
+        center(H - 5, "ENTER: Confirm", C.accent)
+        center(H - 3, "ESC: Cancel", C.muted)
 
         local signal, address, char, code = computer.pullSignal()
 
@@ -668,21 +630,16 @@ local function inputDialog(prompt, secret, multiline)
             if code == 1 or char == 27 then
                 return nil
 
-            elseif multiline and char == 19 then
+            elseif code == 28 or char == 13 then
                 return value
 
-            elseif char == 13 or code == 28 then
-                if multiline then
-                    value = value .. "\n"
-                else
-                    return value
+            elseif code == 14 then
+                if #value > 0 then
+                    value = value:sub(1, -2)
                 end
 
-            elseif char == 8 or code == 14 then
-                value = value:sub(1, -2)
-
             elseif char and char >= 32 and char <= 126 then
-                if #value < (multiline and 1000 or 100) then
+                if #value < 48 then
                     value = value .. string.char(char)
                 end
             end
@@ -690,373 +647,417 @@ local function inputDialog(prompt, secret, multiline)
     end
 end
 
-local function inputLine(prompt, secret)
-    return inputDialog(prompt, secret, false)
+-- ---------------------------------------------------------
+-- Message dialog
+-- ---------------------------------------------------------
+
+local function messageDialog(title, message)
+    clear(C.background)
+
+    rect(3, 4, W - 6, H - 8, C.panel)
+    rect(3, 4, W - 6, 1, C.titlebar)
+
+    put(5, 4, title, C.white)
+
+    local lineY = 7
+
+    for line in tostring(message):gmatch("[^\n]+") do
+        put(5, lineY, line, C.text)
+        lineY = lineY + 1
+
+        if lineY >= H - 5 then
+            break
+        end
+    end
+
+    center(H - 3, "Press any key to continue", C.accent)
+
+    waitForKey()
 end
 
-local function inputMultiline(prompt)
-    return inputDialog(prompt, false, true)
-end
+-- ---------------------------------------------------------
+-- Terms and conditions
+-- ---------------------------------------------------------
 
-local function messageScreen(title, message)
-    local panelW = math.min(W - 4, 50)
-    local panelH = 7
-
-    local panelX = math.floor((W - panelW) / 2)
-    local panelY = math.floor((H - panelH) / 2)
-
-    rect(panelX, panelY, panelW, panelH, C.panel)
-    rect(panelX, panelY, panelW, 2, C.titlebar)
-
-    put(panelX + 2, panelY, title, C.accent)
-    put(panelX + 2, panelY + 3, message, C.text)
-    put(panelX + 2, panelY + 5,
-        "Press any key to continue", C.muted)
+local function termsScreen()
+    local accepted = false
+    local selection = 1
 
     while true do
-        local signal = computer.pullSignal()
-        if signal == "key_down" then break end
+        clear(C.background)
+
+        rect(3, 2, W - 6, H - 4, C.panel)
+        rect(3, 2, W - 6, 1, C.titlebar)
+
+        put(5, 2, "MEADOWS TERMS AND CONDITIONS", C.white)
+
+        put(5, 5, "Welcome to Meadows OS.", C.accent)
+
+        put(5, 7, "Please read this playful system agreement:", C.text)
+
+        put(5, 10, "1. You agree to use Meadows responsibly.", C.text)
+        put(5, 12, "2. Your files and accounts are stored locally.", C.text)
+        put(5, 14, "3. You have to become a slave to Izanox.", C.accent)
+
+        put(5, 17, "This is a joke, not a real obligation.", C.muted)
+
+        if selection == 1 then
+            rect(5, H - 5, 15, 1, C.accentDark)
+        else
+            rect(24, H - 5, 15, 1, C.accentDark)
+        end
+
+        put(6, H - 5, "Accept", C.white)
+        put(25, H - 5, "Decline", C.white)
+
+        center(H - 2, "LEFT/RIGHT: Select     ENTER: Confirm", C.muted)
+
+        local signal, address, char, code = computer.pullSignal()
+
+        if signal == "key_down" then
+            if code == 203 then
+                selection = 1
+            elseif code == 205 then
+                selection = 2
+            elseif code == 28 or char == 13 then
+                if selection == 1 then
+                    accepted = true
+                    break
+                else
+                    accepted = false
+                    break
+                end
+            end
+        end
     end
+
+    return accepted
 end
 
--- ==========================================
--- 12. FIRST-TIME SETUP WIZARD
--- ==========================================
+-- ---------------------------------------------------------
+-- First-time setup
+-- ---------------------------------------------------------
 
 local function setupWizard()
-    clear()
+    if not termsScreen() then
+        messageDialog(
+            "Setup cancelled",
+            "You declined the Meadows terms.\nSetup cannot continue."
+        )
 
-    center(3, OS_NAME .. " 1.1", C.accent)
-    center(5, "FIRST-TIME SETUP", C.white)
-    center(8, "Welcome to your new Meadows computer.", C.text)
-    center(10, "Your selected drive is ready.", C.muted)
-    center(H - 2, "Press any key to begin", C.accent)
-
-    while true do
-        local signal = computer.pullSignal()
-        if signal == "key_down" then break end
+        computer.shutdown()
+        return false
     end
 
-    local pcName = inputLine("Choose a computer name", false) or "MEADOWS-PC"
+    local computerName = inputDialog(
+        "Computer name",
+        "Choose a name for this computer:"
+    )
 
-    pcName = cleanField(pcName):gsub("[^%w_%-]", "")
-
-    if #pcName < 2 then
-        pcName = "MEADOWS-PC"
+    if not computerName then
+        return false
     end
 
-    local username = inputLine("Create administrator username", false) or "admin"
-    username = cleanField(username)
-
-    if #username < 3 or username:find("[^%w_]") or findAccount(username) then
-        username = "admin"
-
-        local suffix = 1
-
-        while findAccount(username) do
-            suffix = suffix + 1
-            username = "admin" .. tostring(suffix)
-        end
+    if #computerName < 1 then
+        computerName = "Meadows-PC"
     end
 
-    local display = inputLine("Enter your display name", false)
+    local displayName = inputDialog(
+        "Create account",
+        "Enter your display name:"
+    )
 
-    if not display or display == "" then
-        display = username
+    if not displayName then
+        return false
     end
 
-    display = cleanField(display)
+    local username = inputDialog(
+        "Create username",
+        "Use 3-16 letters, numbers or underscores:"
+    )
 
-    local password
-
-    while true do
-        password = inputLine(
-            "Create a password (minimum 4 characters)", true)
-
-        if not password or #password < 4 then
-            messageScreen("Password required",
-                "Please create a password with at least 4 characters.")
-        else
-            local confirm = inputLine("Confirm your password", true)
-
-            if confirm == password then
-                break
-            end
-
-            messageScreen("Passwords do not match",
-                "Please try again.")
-        end
+    if not username then
+        return false
     end
 
-    clear()
+    local password = inputDialog(
+        "Create password",
+        "Enter your account password:",
+        true
+    )
 
-    center(2, "MEADOWS TERMS AND CONDITIONS", C.accent)
-    line(4)
-
-    put(3, 6, "1. Meadows is an independent operating system.")
-    put(3, 8, "2. You are responsible for your computer's data.")
-    put(3, 10, "3. Do not modify system files without backups.")
-    put(3, 12, "4. Local passwords provide prototype-level security.")
-    put(3, 14, "5. Meadows is provided as-is.")
-
-    center(H - 2, "Type ACCEPT to agree.", C.accent)
-
-    local accepted = inputLine("Type ACCEPT to continue", false)
-
-    while accepted ~= "ACCEPT" do
-        if accepted then
-            messageScreen("Terms not accepted",
-                "You must type ACCEPT to continue.")
-        end
-
-        accepted = inputLine("Type ACCEPT to continue", false)
+    if not password then
+        return false
     end
 
-    local ok, reason = createAccount(username, display, password)
+    local confirmation = inputDialog(
+        "Confirm password",
+        "Enter your password again:",
+        true
+    )
 
-    if not ok then
-        error("Meadows setup: " .. tostring(reason))
+    if not confirmation then
+        return false
     end
 
-    config.computerName = pcName
+    if password ~= confirmation then
+        messageDialog("Password mismatch", "The passwords do not match.")
+        return false
+    end
+
+    config.computerName = cleanValue(computerName)
+    config.username = username:lower()
+    config.displayName = cleanValue(displayName)
+
+    local success, reason = createAccount(
+        username,
+        displayName,
+        password
+    )
+
+    if not success then
+        messageDialog("Account error", reason)
+        return false
+    end
+
     config.setupComplete = true
 
-    if not saveConfig() then
-        error("Meadows: Could not save system configuration.")
+    local saved, saveError = saveConfig()
+
+    if not saved then
+        messageDialog(
+            "Configuration error",
+            tostring(saveError or "Could not save configuration.")
+        )
+        return false
     end
 
-    messageScreen("Setup complete",
-        "Your Meadows computer is ready.")
+    messageDialog(
+        "Setup complete",
+        "Welcome to Meadows OS, " .. displayName .. "!\n\nYour account has been saved."
+    )
+
+    return true
 end
 
--- Existing accounts are authoritative.
-if #accounts == 0 then
-    setupWizard()
-
-elseif not config.setupComplete then
-    config.setupComplete = true
-
-    if not saveConfig() then
-        error("Meadows: Could not repair system configuration.")
-    end
-end
-
--- ==========================================
--- 13. LOGIN SYSTEM
--- ==========================================
-
-local currentUser = nil
-local loginAttempts = 0
+-- ---------------------------------------------------------
+-- Login screen
+-- ---------------------------------------------------------
 
 local function loginScreen()
-    while not currentUser do
-        clear()
+    while true do
+        clear(C.background)
 
-        rect(1, 1, W, H, C.background)
+        center(3, "MEADOWS OS", C.accent)
+        center(5, config.computerName, C.muted)
 
-        local logoX = math.floor(W / 2) - 3
-        local logoY = 3
-
-        rect(logoX, logoY, 2, 2, C.accentDark)
-        rect(logoX + 3, logoY, 2, 2, C.accentDark)
-        rect(logoX, logoY + 3, 2, 2, C.accent)
-        rect(logoX + 3, logoY + 3, 2, 2, C.accent)
-
-        center(logoY + 6, config.computerName, C.white)
-        center(logoY + 8, "MEADOWS OS 1.1", C.accent)
-
-        local username = inputLine("Username", false)
-
-        if not username then
-            username = ""
+        if #accounts == 0 then
+            center(9, "No accounts were found.", C.text)
+            center(11, "Restart setup to create an account.", C.muted)
+            waitForKey()
+            return nil
         end
 
-        local account = findAccount(username)
+        local selected = 1
 
-        if account then
-            local password = inputLine("Password", true)
+        while true do
+            clear(C.background)
 
-            if password and verifyPassword(account, password) then
-                currentUser = account
-                loginAttempts = 0
-            else
-                loginAttempts = loginAttempts + 1
-                messageScreen("Login failed", "Incorrect password.")
-            end
-        else
-            loginAttempts = loginAttempts + 1
-            messageScreen("Login failed", "Account not found.")
-        end
-    end
-end
+            center(3, "WELCOME BACK", C.accent)
+            center(5, "Select your account", C.white)
 
-loginScreen()
+            for i = 1, #accounts do
+                local account = accounts[i]
+                local y = 8 + (i - 1) * 2
 
--- ==========================================
--- 14. WINDOW MANAGER
--- ==========================================
+                if y < H - 4 then
+                    if i == selected then
+                        rect(4, y, W - 8, 1, C.accentDark)
+                    end
 
-local windows = {}
-local activeWindow = nil
-local nextWindowID = 1
-
-local function windowCount()
-    return #windows
-end
-
-local function findWindow(id)
-    for i = 1, #windows do
-        if windows[i].id == id then
-            return windows[i], i
-        end
-    end
-
-    return nil
-end
-
-local function closeWindow(id)
-    for i = #windows, 1, -1 do
-        if windows[i].id == id then
-            table.remove(windows, i)
-
-            if activeWindow == id then
-                activeWindow = nil
-
-                if #windows > 0 then
-                    activeWindow = windows[#windows].id
+                    put(
+                        6,
+                        y,
+                        tostring(i) .. ". " ..
+                        account.displayName ..
+                        " (" .. account.username .. ")",
+                        C.white
+                    )
                 end
             end
 
-            return true
-        end
-    end
+            center(H - 2, "UP/DOWN: Select     ENTER: Login", C.muted)
 
-    return false
-end
+            local signal, address, char, code = computer.pullSignal()
 
-local function minimizeWindow(id)
-    local win = findWindow(id)
+            if signal == "key_down" then
+                if code == 200 then
+                    selected = math.max(1, selected - 1)
 
-    if not win then return end
+                elseif code == 208 then
+                    selected = math.min(#accounts, selected + 1)
 
-    win.minimized = true
+                elseif code == 28 or char == 13 then
+                    local account = accounts[selected]
 
-    if activeWindow == id then
-        activeWindow = nil
+                    local password = inputDialog(
+                        "Password",
+                        "Enter password for " .. account.displayName .. ":",
+                        true
+                    )
 
-        for i = #windows, 1, -1 do
-            if not windows[i].minimized then
-                activeWindow = windows[i].id
-                break
+                    if password then
+                        if verifyPassword(password, account.passwordHash) then
+                            return account
+                        else
+                            messageDialog(
+                                "Login failed",
+                                "Incorrect password. Please try again."
+                            )
+                        end
+                    end
+
+                    break
+
+                elseif code == 1 then
+                    break
+                end
             end
         end
     end
 end
 
-local function restoreWindow(id)
-    local win = findWindow(id)
+-- ---------------------------------------------------------
+-- Start setup or login
+-- ---------------------------------------------------------
 
-    if not win then return end
+if not config.setupComplete or #accounts == 0 then
+    local success = setupWizard()
 
-    win.minimized = false
-    activeWindow = id
+    if not success then
+        error("Meadows: Setup did not complete.")
+    end
+
+    loadAccounts()
 end
 
-local function focusWindow(id)
-    local win = findWindow(id)
+local currentUser = loginScreen()
 
-    if not win then return end
+if not currentUser then
+    error("Meadows: Login failed.")
+end
 
-    win.minimized = false
-    activeWindow = id
+config.username = currentUser.username
+config.displayName = currentUser.displayName
 
-    for i = 1, #windows do
-        if windows[i].id == id then
-            local selected = table.remove(windows, i)
-            windows[#windows + 1] = selected
-            break
+saveConfig()
+-- ---------------------------------------------------------
+-- Keyboard helpers
+-- ---------------------------------------------------------
+
+local function pullKey()
+    while true do
+        local signal, address, char, code = computer.pullSignal()
+
+        if signal == "key_down" then
+            return char, code
         end
     end
 end
 
-local function openWindow(title, app, data)
-    local existing = nil
+local function waitForKeyOrTouch()
+    while true do
+        local signal = computer.pullSignal()
 
-    -- Only one window per app.
-    for i = 1, #windows do
-        if windows[i].app == app then
-            existing = windows[i]
-            break
+        if signal == "key_down" or signal == "touch" then
+            return signal
         end
     end
-
-    if existing then
-        restoreWindow(existing.id)
-        focusWindow(existing.id)
-        return existing
-    end
-
-    if windowCount() >= MAX_WINDOWS then
-        messageScreen("Window limit",
-            "Only two windows can be open at once.")
-        return nil
-    end
-
-    local win = {
-        id = nextWindowID,
-        title = title,
-        app = app,
-        data = data or {},
-        minimized = false,
-        x = 4 + (#windows * 3),
-        y = 3 + (#windows * 2),
-        width = math.min(W - 8, 54),
-        height = math.min(H - 8, 19)
-    }
-
-    nextWindowID = nextWindowID + 1
-
-    windows[#windows + 1] = win
-    activeWindow = win.id
-
-    return win
 end
 
--- ==========================================
--- 15. FILESYSTEM HELPERS
--- ==========================================
+local function confirmDialog(title, message)
+    local selection = 1
+
+    while true do
+        clear(C.background)
+
+        rect(4, 5, W - 8, H - 10, C.panel)
+        rect(4, 5, W - 8, 1, C.titlebar)
+
+        put(6, 5, title, C.white)
+        put(6, 8, message, C.text)
+
+        if selection == 1 then
+            rect(6, H - 5, 12, 1, C.accentDark)
+        else
+            rect(22, H - 5, 12, 1, C.accentDark)
+        end
+
+        put(7, H - 5, "Yes", C.white)
+        put(23, H - 5, "No", C.white)
+
+        center(H - 2, "LEFT/RIGHT: Select     ENTER: Confirm", C.muted)
+
+        local signal, address, char, code = computer.pullSignal()
+
+        if signal == "key_down" then
+            if code == 203 then
+                selection = 1
+            elseif code == 205 then
+                selection = 2
+            elseif code == 28 or char == 13 then
+                return selection == 1
+            elseif code == 1 then
+                return false
+            end
+        end
+    end
+end
+
+-- ---------------------------------------------------------
+-- Path utilities
+-- ---------------------------------------------------------
 
 local function normalizePath(path)
     path = tostring(path or "/")
+    path = path:gsub("\\", "/")
 
-    if path == "" then
+    local segments = {}
+
+    for part in path:gmatch("[^/]+") do
+        if part == ".." then
+            if #segments > 0 then
+                segments[#segments] = nil
+            end
+        elseif part ~= "." and part ~= "" then
+            segments[#segments + 1] = part
+        end
+    end
+
+    if #segments == 0 then
         return "/"
     end
 
-    path = path:gsub("\\", "/")
-
-    if path:sub(1, 1) ~= "/" then
-        path = "/" .. path
-    end
-
-    path = path:gsub("/+", "/")
-
-    if #path > 1 then
-        path = path:gsub("/$", "")
-    end
-
-    return path
+    return "/" .. table.concat(segments, "/")
 end
 
-local function joinPath(parent, name)
+local function joinPath(parent, child)
     parent = normalizePath(parent)
-    name = tostring(name or ""):gsub("/", "")
+    child = tostring(child or "")
 
-    if parent == "/" then
-        return "/" .. name
+    if child:find("/", 1, true) or child:find("\\", 1, true) then
+        return nil
     end
 
-    return parent .. "/" .. name
+    if child == "" or child == "." or child == ".." then
+        return nil
+    end
+
+    if parent == "/" then
+        return normalizePath("/" .. child)
+    end
+
+    return normalizePath(parent .. "/" .. child)
 end
 
 local function isProtectedPath(path)
@@ -1066,21 +1067,63 @@ local function isProtectedPath(path)
         path:sub(1, #DATA_DIR + 1) == DATA_DIR .. "/"
 end
 
-local function listDirectory(path)
+local function safePath(path)
     path = normalizePath(path)
 
-    local ok, iterator = pcall(filesystem.list, path)
-
-    if not ok or not iterator then
-        return {}
+    if isProtectedPath(path) then
+        return nil
     end
 
+    return path
+end
+
+local function parentPath(path)
+    path = normalizePath(path)
+
+    if path == "/" then
+        return "/"
+    end
+
+    local parent = path:match("^(.*)/[^/]+$")
+    if not parent or parent == "" then
+        return "/"
+    end
+
+    return parent
+end
+
+local function baseName(path)
+    path = normalizePath(path)
+
+    if path == "/" then
+        return "/"
+    end
+
+    return path:match("([^/]+)$") or path
+end
+
+local function pathExists(path)
+    return fsExists(filesystem, normalizePath(path))
+end
+
+local function isDirectory(path)
+    local ok, result = pcall(filesystem.isDirectory, normalizePath(path))
+    return ok and result == true
+end
+
+local function listDirectory(path)
     local result = {}
 
-    while true do
-        local readOK, item = pcall(iterator)
+    local ok, iterator = pcall(filesystem.list, normalizePath(path))
 
-        if not readOK or not item then
+    if not ok or not iterator then
+        return result
+    end
+
+    while true do
+        local success, item = pcall(iterator)
+
+        if not success or not item then
             break
         end
 
@@ -1095,8 +1138,8 @@ local function listDirectory(path)
         local pa = joinPath(path, a)
         local pb = joinPath(path, b)
 
-        local da = filesystem.isDirectory(pa)
-        local db = filesystem.isDirectory(pb)
+        local da = pa and isDirectory(pa) or false
+        local db = pb and isDirectory(pb) or false
 
         if da ~= db then
             return da
@@ -1108,321 +1151,525 @@ local function listDirectory(path)
     return result
 end
 
-local function readTextFile(path)
-    path = normalizePath(path)
-
-    if not fsExists(filesystem, path) then
-        return nil
-    end
-
-    return readFile(path)
-end
-
-local function writeTextFile(path, contents)
-    path = normalizePath(path)
-
-    if isProtectedPath(path) then
-        return false, "Protected system folder."
-    end
-
-    local parent = path:match("^(.*)/[^/]+$")
-
-    if parent and parent ~= "" and not fsExists(filesystem, parent) then
-        return false, "Parent folder does not exist."
-    end
-
-    if filesystem.isDirectory(path) then
-        return false, "Cannot write to a folder."
-    end
-
-    if not writeFile(path, contents) then
-        return false, "Could not write file."
-    end
-
-    return true
-end
+-- ---------------------------------------------------------
+-- File and folder creation
+-- ---------------------------------------------------------
 
 local function createFolder(path)
-    path = normalizePath(path)
+    path = safePath(path)
 
-    if isProtectedPath(path) then
-        return false, "Protected system folder."
+    if not path then
+        return false, "Protected system location."
     end
 
-    if fsExists(filesystem, path) then
-        return false, "That name already exists."
-    end
-
-    local parent = path:match("^(.*)/[^/]+$")
-
-    if parent and parent ~= "" and not fsExists(filesystem, parent) then
-        return false, "Parent folder does not exist."
+    if pathExists(path) then
+        return false, "This item already exists."
     end
 
     local ok, result = pcall(filesystem.makeDirectory, path)
 
-    if not ok or result == false or not fsExists(filesystem, path) then
+    if not ok or result == false or not pathExists(path) then
         return false, "Could not create folder."
     end
 
     return true
 end
 
-local function deletePath(path)
-    path = normalizePath(path)
+local function createFile(path, content)
+    path = safePath(path)
 
-    if path == "/" or isProtectedPath(path) then
-        return false, "This location is protected."
+    if not path then
+        return false, "Protected system location."
     end
 
-    if not fsExists(filesystem, path) then
-        return false, "File or folder not found."
+    if pathExists(path) then
+        return false, "This item already exists."
+    end
+
+    local success, reason = fsWrite(filesystem, path, content or "")
+
+    if not success then
+        return false, reason
+    end
+
+    return true
+end
+
+-- ---------------------------------------------------------
+-- Recursive deletion
+-- ---------------------------------------------------------
+
+local function deletePath(path)
+    path = safePath(path)
+
+    if not path or path == "/" then
+        return false, "Cannot delete this location."
+    end
+
+    if not pathExists(path) then
+        return false, "Item does not exist."
+    end
+
+    if isDirectory(path) then
+        local entries = listDirectory(path)
+
+        for i = 1, #entries do
+            local child = joinPath(path, entries[i])
+
+            if child then
+                local success, reason = deletePath(child)
+
+                if not success then
+                    return false, reason
+                end
+            end
+        end
     end
 
     local ok, result = pcall(filesystem.remove, path)
 
-    if not ok or result == false then
+    if not ok or result == false or pathExists(path) then
         return false, "Could not delete item."
     end
 
     return true
 end
 
-local function renamePath(oldPath, newPath)
-    oldPath = normalizePath(oldPath)
-    newPath = normalizePath(newPath)
+-- ---------------------------------------------------------
+-- Rename
+-- ---------------------------------------------------------
 
-    if oldPath == "/" or isProtectedPath(oldPath) or
-        isProtectedPath(newPath) then
-        return false, "This location is protected."
+local function renamePath(oldPath, newName)
+    oldPath = safePath(oldPath)
+
+    if not oldPath then
+        return false, "Protected system location."
     end
 
-    if not fsExists(filesystem, oldPath) then
-        return false, "Original item not found."
+    newName = tostring(newName or "")
+
+    if newName == "" or newName == "." or newName == ".." or
+        newName:find("/", 1, true) or
+        newName:find("\\", 1, true) then
+        return false, "Invalid new name."
     end
 
-    if fsExists(filesystem, newPath) then
-        return false, "Destination already exists."
+    local destination = joinPath(parentPath(oldPath), newName)
+
+    if not destination then
+        return false, "Invalid destination."
     end
 
-    local ok, result = pcall(filesystem.rename, oldPath, newPath)
+    if pathExists(destination) then
+        return false, "An item with that name already exists."
+    end
 
-    if not ok or result == false then
+    local ok, result = pcall(filesystem.rename, oldPath, destination)
+
+    if not ok or result == false or not pathExists(destination) then
         return false, "Rename failed."
     end
 
     return true
 end
 
--- ==========================================
--- 16. FILE COPY AND CUT
--- ==========================================
+-- ---------------------------------------------------------
+-- Binary-safe file copy
+-- ---------------------------------------------------------
 
-local function copyFileContents(source, destination)
-    local data = readTextFile(source)
+local function copyFile(source, destination)
+    source = safePath(source)
+    destination = safePath(destination)
 
-    if data == nil then
-        return false, "Could not read source file."
+    if not source or not destination then
+        return false, "Protected system location."
     end
 
-    return writeTextFile(destination, data)
-end
-
-local function copyDirectory(source, destination)
-    if not fsExists(filesystem, source) then
-        return false, "Source not found."
+    if not pathExists(source) or isDirectory(source) then
+        return false, "Source is not a regular file."
     end
 
-    if not filesystem.isDirectory(source) then
-        return copyFileContents(source, destination)
+    if pathExists(destination) then
+        return false, "Destination already exists."
     end
 
-    local ok, reason = createFolder(destination)
+    local sourceHandle
+    local destinationHandle
+
+    local ok, reason = pcall(function()
+        sourceHandle = assert(filesystem.open(source, "r"))
+        destinationHandle = assert(filesystem.open(destination, "w"))
+
+        while true do
+            local chunk = filesystem.read(sourceHandle, 4096)
+
+            if not chunk or #chunk == 0 then
+                break
+            end
+
+            local written = filesystem.write(destinationHandle, chunk)
+
+            if written == false then
+                error("Write failed.")
+            end
+        end
+    end)
+
+    if sourceHandle then
+        pcall(filesystem.close, sourceHandle)
+    end
+
+    if destinationHandle then
+        pcall(filesystem.close, destinationHandle)
+    end
 
     if not ok then
-        return false, reason
+        pcall(filesystem.remove, destination)
+        return false, tostring(reason)
     end
 
-    local children = listDirectory(source)
+    return true
+end
 
-    for i = 1, #children do
-        local name = children[i]
+-- ---------------------------------------------------------
+-- Recursive copy
+-- ---------------------------------------------------------
 
-        local childSource = joinPath(source, name)
-        local childDestination = joinPath(destination, name)
+local function copyPath(source, destination)
+    source = safePath(source)
+    destination = safePath(destination)
 
-        local copied, copyError = copyDirectory(
-            childSource, childDestination)
+    if not source or not destination then
+        return false, "Protected system location."
+    end
 
-        if not copied then
-            return false, copyError
+    if not pathExists(source) then
+        return false, "Source does not exist."
+    end
+
+    if pathExists(destination) then
+        return false, "Destination already exists."
+    end
+
+    if isDirectory(source) then
+        if destination:sub(1, #source + 1) == source .. "/" then
+            return false, "Cannot copy a folder into itself."
         end
+
+        local ok, result = pcall(filesystem.makeDirectory, destination)
+
+        if not ok or result == false then
+            return false, "Could not create destination folder."
+        end
+
+        local entries = listDirectory(source)
+
+        for i = 1, #entries do
+            local childSource = joinPath(source, entries[i])
+            local childDestination = joinPath(destination, entries[i])
+
+            if childSource and childDestination then
+                local success, reason =
+                    copyPath(childSource, childDestination)
+
+                if not success then
+                    return false, reason
+                end
+            end
+        end
+
+        return true
     end
 
-    return true
+    return copyFile(source, destination)
 end
 
-local clipboard = {
-    path = nil,
-    mode = nil
-}
+-- ---------------------------------------------------------
+-- Clipboard
+-- ---------------------------------------------------------
 
-local function clipboardCopy(path)
-    path = normalizePath(path)
+local clipboard = nil
+local clipboardMode = nil
 
-    if isProtectedPath(path) then
-        return false, "Cannot copy protected system files."
-    end
-
-    if not fsExists(filesystem, path) then
-        return false, "Item not found."
-    end
-
-    clipboard.path = path
-    clipboard.mode = "copy"
-
-    return true
-end
-
-local function clipboardCut(path)
-    path = normalizePath(path)
-
-    if path == "/" or isProtectedPath(path) then
-        return false, "Cannot cut this item."
-    end
-
-    if not fsExists(filesystem, path) then
-        return false, "Item not found."
-    end
-
-    clipboard.path = path
-    clipboard.mode = "cut"
-
-    return true
-end
-
-local function clipboardPaste(destination)
-    if not clipboard.path or not clipboard.mode then
+local function pasteClipboard(currentDirectory)
+    if not clipboard then
         return false, "Clipboard is empty."
     end
 
-    destination = normalizePath(destination)
+    local destination = joinPath(
+        currentDirectory,
+        baseName(clipboard)
+    )
 
-    if not filesystem.isDirectory(destination) then
-        return false, "Destination is not a folder."
+    if not destination then
+        return false, "Invalid destination."
     end
 
-    local name = clipboard.path:match("([^/]+)$")
-
-    if not name then
-        return false, "Invalid source."
-    end
-
-    local target = joinPath(destination, name)
-
-    if target == clipboard.path then
-        return false, "Source and destination are the same."
-    end
-
-    if fsExists(filesystem, target) then
+    if pathExists(destination) then
         return false, "An item with that name already exists."
     end
 
-    if clipboard.mode == "cut" then
-        local ok, reason = renamePath(clipboard.path, target)
+    local success, reason = copyPath(clipboard, destination)
 
-        if ok then
-            clipboard.path = nil
-            clipboard.mode = nil
-        end
-
-        return ok, reason
+    if not success then
+        return false, reason
     end
 
-    return copyDirectory(clipboard.path, target)
+    if clipboardMode == "cut" then
+        local removed, removeReason = deletePath(clipboard)
+
+        if not removed then
+            return false, "Copied, but original could not be removed: " ..
+                tostring(removeReason)
+        end
+    end
+
+    clipboard = nil
+    clipboardMode = nil
+
+    return true
 end
 
--- ==========================================
--- 17. FILES APP
--- ==========================================
+-- ---------------------------------------------------------
+-- Simple text editor
+-- ---------------------------------------------------------
+
+local function textEditor(path, initialText)
+    local content = tostring(initialText or "")
+    local lines = {}
+
+    local function rebuildLines()
+        lines = {}
+
+        for line in (content .. "\n"):gmatch("(.-)\n") do
+            lines[#lines + 1] = line
+        end
+
+        if #lines == 0 then
+            lines[1] = ""
+        end
+    end
+
+    rebuildLines()
+
+    local cursorLine = #lines
+    local cursorColumn = #(lines[cursorLine] or "")
+
+    while true do
+        clear(C.background)
+
+        rect(2, 2, W - 4, H - 4, C.panel)
+        rect(2, 2, W - 4, 1, C.titlebar)
+
+        put(4, 2, "NOTEPAD - " .. baseName(path), C.white)
+
+        local maxLines = H - 9
+        local firstLine = math.max(
+            1,
+            cursorLine - maxLines + 1
+        )
+
+        for i = firstLine, math.min(#lines, firstLine + maxLines - 1) do
+            put(4, 4 + i - firstLine, lines[i], C.text)
+        end
+
+        local cursorY = 4 + cursorLine - firstLine
+        local cursorX = 4 + cursorColumn
+
+        put(cursorX, cursorY, "_", C.accent)
+
+        center(H - 3, "CTRL+S: Save     ESC: Exit", C.accent)
+
+        local signal, address, char, code = computer.pullSignal()
+
+        if signal == "key_down" then
+            if code == 1 then
+                local answer = confirmDialog(
+                    "Close editor",
+                    "Save before closing?"
+                )
+
+                if answer then
+                    local success, reason = writeFile(
+                        path,
+                        table.concat(lines, "\n")
+                    )
+
+                    if not success then
+                        messageDialog("Save failed", tostring(reason))
+                    end
+                end
+
+                return
+
+            elseif code == 31 and
+                (char == 115 or char == 83) then
+
+                local success, reason = writeFile(
+                    path,
+                    table.concat(lines, "\n")
+                )
+
+                if success then
+                    messageDialog("Saved", "Your changes were saved.")
+                else
+                    messageDialog("Save failed", tostring(reason))
+                end
+
+            elseif code == 14 then
+                if cursorColumn > 0 then
+                    local line = lines[cursorLine]
+
+                    lines[cursorLine] =
+                        line:sub(1, cursorColumn) ..
+                        line:sub(cursorColumn + 2)
+
+                    cursorColumn = cursorColumn - 1
+
+                elseif cursorLine > 1 then
+                    local previous = lines[cursorLine - 1]
+                    local current = lines[cursorLine]
+
+                    cursorColumn = #previous
+                    lines[cursorLine - 1] = previous .. current
+
+                    table.remove(lines, cursorLine)
+                    cursorLine = cursorLine - 1
+                end
+
+            elseif code == 28 then
+                local line = lines[cursorLine]
+
+                local left = line:sub(1, cursorColumn)
+                local right = line:sub(cursorColumn + 1)
+
+                lines[cursorLine] = left
+                table.insert(lines, cursorLine + 1, right)
+
+                cursorLine = cursorLine + 1
+                cursorColumn = 0
+
+            elseif code == 203 then
+                cursorColumn = math.max(0, cursorColumn - 1)
+
+            elseif code == 205 then
+                cursorColumn = math.min(
+                    #lines[cursorLine],
+                    cursorColumn + 1
+                )
+
+            elseif code == 200 then
+                cursorLine = math.max(1, cursorLine - 1)
+                cursorColumn = math.min(
+                    cursorColumn,
+                    #lines[cursorLine]
+                )
+
+            elseif code == 208 then
+                cursorLine = math.min(#lines, cursorLine + 1)
+                cursorColumn = math.min(
+                    cursorColumn,
+                    #lines[cursorLine]
+                )
+
+            elseif char and char >= 32 and char <= 126 then
+                local line = lines[cursorLine]
+
+                lines[cursorLine] =
+                    line:sub(1, cursorColumn) ..
+                    string.char(char) ..
+                    line:sub(cursorColumn + 1)
+
+                cursorColumn = cursorColumn + 1
+            end
+        end
+    end
+end
+
+-- ---------------------------------------------------------
+-- File Explorer
+-- ---------------------------------------------------------
 
 local function filesApp()
-    local currentPath = "/"
+    local currentDirectory = "/"
     local selectedIndex = 1
     local scroll = 0
-    local contextOpen = false
 
-    local function drawFiles()
-        clear()
+    while true do
+        local entries = listDirectory(currentDirectory)
 
-        put(2, 1, "MEADOWS FILES", C.accent)
-        put(W - 13, 1, "[ESC] Close", C.muted)
+        local rows = {}
 
-        rect(2, 3, W - 4, 2, C.panel)
-        put(4, 3, "Location: " .. currentPath, C.white)
-
-        local entries = listDirectory(currentPath)
-
-        local visible = H - 9
-
-        if selectedIndex < 1 then selectedIndex = 1 end
-
-        if selectedIndex > #entries and #entries > 0 then
-            selectedIndex = #entries
+        if currentDirectory ~= "/" then
+            rows[#rows + 1] = {
+                name = "..",
+                path = parentPath(currentDirectory),
+                directory = true,
+                parent = true
+            }
         end
 
-        if selectedIndex <= scroll then
-            scroll = selectedIndex - 1
-        elseif selectedIndex > scroll + visible then
+        for i = 1, #entries do
+            local path = joinPath(currentDirectory, entries[i])
+
+            rows[#rows + 1] = {
+                name = entries[i],
+                path = path,
+                directory = path and isDirectory(path) or false,
+                parent = false
+            }
+        end
+
+        if selectedIndex > #rows then
+            selectedIndex = math.max(1, #rows)
+        end
+
+        clear(C.background)
+
+        rect(2, 2, W - 4, H - 4, C.panel)
+        rect(2, 2, W - 4, 1, C.titlebar)
+
+        put(4, 2, "FILES", C.white)
+        put(4, 4, "Location: " .. currentDirectory, C.accent)
+
+        put(4, 6, "Name", C.muted)
+        put(W - 17, 6, "Type", C.muted)
+
+        local visible = H - 13
+
+        if selectedIndex > scroll + visible then
             scroll = selectedIndex - visible
-        end
-
-        if currentPath ~= "/" then
-            put(4, 6, "..", C.accent)
+        elseif selectedIndex <= scroll then
+            scroll = selectedIndex - 1
         end
 
         for i = 1, visible do
-            local index = scroll + i
-            local name = entries[index]
+            local index = i + scroll
+            local item = rows[index]
 
-            if not name then break end
+            if item then
+                local y = 7 + i
 
-            local fullPath = joinPath(currentPath, name)
-            local isDirectory = filesystem.isDirectory(fullPath)
+                if index == selectedIndex then
+                    rect(3, y, W - 6, 1, C.accentDark)
+                end
 
-            local y = 6 + i
+                local icon = item.directory and "[DIR] " or "[FILE] "
 
-            if index == selectedIndex then
-                rect(3, y, W - 6, 1, C.accentDark)
+                put(4, y, icon .. item.name, C.text)
+
+                put(
+                    W - 17,
+                    y,
+                    item.directory and "Folder" or "File",
+                    C.muted
+                )
             end
-
-            local prefix = isDirectory and "[DIR] " or "[FILE] "
-            put(4, y, prefix .. name, C.text)
         end
 
-        rect(2, H - 2, W - 4, 1, C.panel)
-        put(3, H - 2,
-            "ENTER Open | N New | D Delete | R Rename | C Copy | X Cut | V Paste",
-            C.muted)
-    end
-
-    local function askName(prompt)
-        local name = inputLine(prompt, false)
-
-        if not name or name == "" then
-            return nil
-        end
-
-        if name:find("/") or name == "." or name == ".." then
-            messageScreen("Invalid name", "Choose a valid file or folder name.")
-            return nil
-        end
-
-        return name
-    end
-
-    while true do
-        drawFiles()
+        center(H - 5, "ENTER: Open     ESC: Desktop", C.accent)
+        center(H - 3, "N: New folder   F: New file   R: Rename", C.muted)
+        center(H - 2, "C: Copy   X: Cut   V: Paste   D: Delete", C.muted)
 
         local signal, address, char, code = computer.pullSignal()
 
@@ -1435,264 +1682,221 @@ local function filesApp()
 
             elseif code == 208 then
                 selectedIndex = math.min(
-                    #listDirectory(currentPath),
-                    selectedIndex + 1)
+                    math.max(1, #rows),
+                    selectedIndex + 1
+                )
 
             elseif code == 28 then
-                local entries = listDirectory(currentPath)
+                local item = rows[selectedIndex]
 
-                if currentPath ~= "/" and selectedIndex == 1 then
-                    currentPath = currentPath:match("^(.*)/[^/]+$") or "/"
-                    selectedIndex = 1
-                    scroll = 0
-                else
-                    local index = selectedIndex
+                if item then
+                    if item.directory then
+                        currentDirectory = item.path
+                        selectedIndex = 1
+                        scroll = 0
+                    else
+                        local content = readFile(item.path)
 
-                    if currentPath ~= "/" then
-                        index = index - 1
+                        if content then
+                            textEditor(item.path, content)
+                        else
+                            messageDialog(
+                                "Open failed",
+                                "Could not read this file."
+                            )
+                        end
                     end
+                end
 
-                    local name = entries[index]
+            elseif char == 110 or char == 78 then
+                local name = inputDialog(
+                    "New folder",
+                    "Enter folder name:"
+                )
+
+                if name then
+                    local destination = joinPath(currentDirectory, name)
+
+                    if destination then
+                        local success, reason = createFolder(destination)
+
+                        if not success then
+                            messageDialog("Folder error", tostring(reason))
+                        end
+                    end
+                end
+
+            elseif char == 102 or char == 70 then
+                local name = inputDialog(
+                    "New file",
+                    "Enter file name:"
+                )
+
+                if name then
+                    local destination = joinPath(currentDirectory, name)
+
+                    if destination then
+                        local success, reason = createFile(destination, "")
+
+                        if not success then
+                            messageDialog("File error", tostring(reason))
+                        end
+                    end
+                end
+
+            elseif char == 114 or char == 82 then
+                local item = rows[selectedIndex]
+
+                if item and not item.parent then
+                    local name = inputDialog(
+                        "Rename",
+                        "Enter the new name:"
+                    )
 
                     if name then
-                        local path = joinPath(currentPath, name)
+                        local success, reason = renamePath(
+                            item.path,
+                            name
+                        )
 
-                        if filesystem.isDirectory(path) then
-                            currentPath = path
-                            selectedIndex = 1
-                            scroll = 0
-                        else
-                            local data = readTextFile(path)
-
-                            if data then
-                                local preview = data:sub(1, 1500)
-                                messageScreen(name, preview)
-                            end
+                        if not success then
+                            messageDialog("Rename error", tostring(reason))
                         end
                     end
                 end
 
-            elseif char == 110 then
-                local name = askName("New folder name")
+            elseif char == 99 or char == 67 then
+                local item = rows[selectedIndex]
 
-                if name then
-                    local ok, reason = createFolder(
-                        joinPath(currentPath, name))
-
-                    if not ok then
-                        messageScreen("Create folder", reason)
-                    end
+                if item and not item.parent then
+                    clipboard = item.path
+                    clipboardMode = "copy"
                 end
 
-            elseif char == 102 then
-                local name = askName("New file name")
+            elseif char == 120 or char == 88 then
+                local item = rows[selectedIndex]
 
-                if name then
-                    local ok, reason = writeTextFile(
-                        joinPath(currentPath, name), "")
-
-                    if not ok then
-                        messageScreen("Create file", reason)
-                    end
+                if item and not item.parent then
+                    clipboard = item.path
+                    clipboardMode = "cut"
                 end
 
-            elseif char == 100 then
-                local entries = listDirectory(currentPath)
-                local index = selectedIndex
+            elseif char == 118 or char == 86 then
+                local success, reason = pasteClipboard(currentDirectory)
 
-                if currentPath ~= "/" then
-                    index = index - 1
+                if not success then
+                    messageDialog("Paste failed", tostring(reason))
                 end
 
-                local name = entries[index]
+            elseif char == 100 or char == 68 then
+                local item = rows[selectedIndex]
 
-                if name then
-                    local answer = inputLine(
-                        "Type DELETE to confirm", false)
+                if item and not item.parent then
+                    if confirmDialog(
+                        "Delete item",
+                        "Delete " .. item.name .. "?"
+                    ) then
+                        local success, reason = deletePath(item.path)
 
-                    if answer == "DELETE" then
-                        local ok, reason = deletePath(
-                            joinPath(currentPath, name))
-
-                        if not ok then
-                            messageScreen("Delete failed", reason)
-                        else
-                            selectedIndex = math.max(1, selectedIndex - 1)
+                        if not success then
+                            messageDialog("Delete failed", tostring(reason))
                         end
+
+                        selectedIndex = 1
                     end
-                end
-
-            elseif char == 114 then
-                local entries = listDirectory(currentPath)
-                local index = selectedIndex
-
-                if currentPath ~= "/" then
-                    index = index - 1
-                end
-
-                local name = entries[index]
-
-                if name then
-                    local newName = askName("New name")
-
-                    if newName then
-                        local ok, reason = renamePath(
-                            joinPath(currentPath, name),
-                            joinPath(currentPath, newName))
-
-                        if not ok then
-                            messageScreen("Rename failed", reason)
-                        end
-                    end
-                end
-
-            elseif char == 99 then
-                local entries = listDirectory(currentPath)
-                local index = selectedIndex
-
-                if currentPath ~= "/" then
-                    index = index - 1
-                end
-
-                local name = entries[index]
-
-                if name then
-                    local ok, reason = clipboardCopy(
-                        joinPath(currentPath, name))
-
-                    if not ok then
-                        messageScreen("Copy failed", reason)
-                    end
-                end
-
-            elseif char == 120 then
-                local entries = listDirectory(currentPath)
-                local index = selectedIndex
-
-                if currentPath ~= "/" then
-                    index = index - 1
-                end
-
-                local name = entries[index]
-
-                if name then
-                    local ok, reason = clipboardCut(
-                        joinPath(currentPath, name))
-
-                    if not ok then
-                        messageScreen("Cut failed", reason)
-                    end
-                end
-
-            elseif char == 118 then
-                local ok, reason = clipboardPaste(currentPath)
-
-                if not ok then
-                    messageScreen("Paste failed", reason)
                 end
             end
         end
     end
 end
 
--- ==========================================
--- 18. NOTES APP
--- ==========================================
+-- ---------------------------------------------------------
+-- Notes application
+-- ---------------------------------------------------------
 
 local function notesApp()
-    local notes = readFile(NOTES_FILE) or ""
-    local cursor = #notes + 1
-    local scroll = 0
-
-    local function saveNotes()
-        if not writeFile(NOTES_FILE, notes) then
-            messageScreen("Notes", "Could not save notes.")
-            return false
-        end
-
-        return true
-    end
-
-    local function drawNotes()
-        clear()
-
-        put(2, 1, "MEADOWS NOTES", C.accent)
-        put(W - 13, 1, "[ESC] Close", C.muted)
-
-        rect(2, 3, W - 4, H - 7, C.panel)
-
-        local lines = {}
-
-        for textLine in (notes .. "\n"):gmatch("(.-)\n") do
-            lines[#lines + 1] = textLine
-        end
-
-        local visible = H - 10
-
-        if cursor > #notes then
-            local cursorLine = 1
-
-            for _ in notes:gmatch("\n") do
-                cursorLine = cursorLine + 1
-            end
-
-            if cursorLine > visible then
-                scroll = cursorLine - visible
-            end
-        end
-
-        for i = 1, visible do
-            local lineIndex = scroll + i
-
-            if lines[lineIndex] then
-                put(4, 4 + i, lines[lineIndex], C.text)
-            end
-        end
-
-        rect(2, H - 3, W - 4, 1, C.titlebar)
-        put(3, H - 3, "CTRL+S Save | ENTER New line | ESC Close", C.white)
-    end
+    local content = readFile(NOTES_FILE) or ""
 
     while true do
-        drawNotes()
+        clear(C.background)
+
+        rect(2, 2, W - 4, H - 4, C.panel)
+        rect(2, 2, W - 4, 1, C.titlebar)
+
+        put(4, 2, "MEADOWS NOTES", C.white)
+
+        put(4, 5, "Your notes are stored on the Meadows drive.", C.muted)
+
+        local line = 7
+
+        for textLine in (content .. "\n"):gmatch("(.-)\n") do
+            if line >= H - 6 then break end
+
+            put(4, line, textLine, C.text)
+            line = line + 1
+        end
+
+        center(H - 5, "A: Add note     C: Clear notes", C.accent)
+        center(H - 3, "ESC: Return to desktop", C.muted)
 
         local signal, address, char, code = computer.pullSignal()
 
         if signal == "key_down" then
             if code == 1 then
-                saveNotes()
                 return
 
-            elseif char == 19 then
-                saveNotes()
+            elseif char == 97 or char == 65 then
+                local note = inputDialog(
+                    "Add note",
+                    "Write your note:"
+                )
 
-            elseif code == 28 then
-                notes = notes .. "\n"
-                cursor = #notes + 1
+                if note and note ~= "" then
+                    if content ~= "" then
+                        content = content .. "\n"
+                    end
 
-            elseif code == 14 then
-                if #notes > 0 then
-                    notes = notes:sub(1, -2)
-                    cursor = #notes + 1
+                    content = content .. note
+
+                    local success, reason = writeFile(
+                        NOTES_FILE,
+                        content
+                    )
+
+                    if not success then
+                        messageDialog("Notes error", tostring(reason))
+                    end
                 end
 
-            elseif char and char >= 32 and char <= 126 then
-                if #notes < 10000 then
-                    notes = notes .. string.char(char)
-                    cursor = #notes + 1
+            elseif char == 99 or char == 67 then
+                if confirmDialog(
+                    "Clear notes",
+                    "Delete all saved notes?"
+                ) then
+                    content = ""
+
+                    local success, reason = writeFile(
+                        NOTES_FILE,
+                        content
+                    )
+
+                    if not success then
+                        messageDialog("Notes error", tostring(reason))
+                    end
                 end
             end
         end
     end
 end
 
--- ==========================================
--- 19. TERMINAL APP
--- ==========================================
+-- ---------------------------------------------------------
+-- Terminal
+-- ---------------------------------------------------------
 
 local function terminalApp()
+    local currentDirectory = "/"
     local history = {}
-    local currentPath = "/"
+    local running = true
 
     local function terminalPrint(message, color)
         history[#history + 1] = {
@@ -1700,7 +1904,7 @@ local function terminalApp()
             color = color or C.text
         }
 
-        while #history > H - 7 do
+        while #history > H - 9 do
             table.remove(history, 1)
         end
     end
@@ -1712,332 +1916,265 @@ local function terminalApp()
             args[#args + 1] = word
         end
 
-        local cmd = args[1] or ""
+        local cmd = args[1]
 
-        if cmd == "" then
-            return
+        if not cmd then return end
 
-        elseif cmd == "help" then
-            terminalPrint("Meadows Terminal commands:", C.accent)
-            terminalPrint("help, clear, ls, pwd, cd")
-            terminalPrint("mkdir, touch, cat, write, rm")
-            terminalPrint("whoami, hostname, storage, date")
+        if cmd == "help" then
+            terminalPrint("Available commands:")
+            terminalPrint("help - Show commands")
+            terminalPrint("clear - Clear terminal")
+            terminalPrint("pwd - Current directory")
+            terminalPrint("ls - List files")
+            terminalPrint("cd PATH - Change directory")
+            terminalPrint("mkdir NAME - Create folder")
+            terminalPrint("touch NAME - Create file")
+            terminalPrint("cat NAME - Read text file")
+            terminalPrint("rm NAME - Delete item")
+            terminalPrint("rename OLD NEW - Rename item")
+            terminalPrint("whoami - Current account")
+            terminalPrint("about - OS information")
+            terminalPrint("reboot - Restart computer")
+            terminalPrint("shutdown - Shut down computer")
 
         elseif cmd == "clear" then
             history = {}
 
         elseif cmd == "pwd" then
-            terminalPrint(currentPath)
-
-        elseif cmd == "whoami" then
-            terminalPrint(currentUser.username, C.accent)
-
-        elseif cmd == "hostname" then
-            terminalPrint(config.computerName)
-
-        elseif cmd == "date" then
-            terminalPrint("Uptime: " .. tostring(math.floor(computer.uptime())) .. " seconds")
-
-        elseif cmd == "storage" then
-            terminalPrint("Drive: " .. STORAGE_ADDRESS)
-            terminalPrint("Label: " .. selectedDisk.label)
-            terminalPrint("Used: " .. tostring(selectedDisk.used))
-            terminalPrint("Total: " .. tostring(selectedDisk.total))
+            terminalPrint(currentDirectory)
 
         elseif cmd == "ls" then
-            local entries = listDirectory(currentPath)
+            local entries = listDirectory(currentDirectory)
 
-            for i = 1, #entries do
-                local path = joinPath(currentPath, entries[i])
-                local suffix = filesystem.isDirectory(path) and "/" or ""
+            if #entries == 0 then
+                terminalPrint("(empty)")
+            else
+                for i = 1, #entries do
+                    local path = joinPath(currentDirectory, entries[i])
+                    local suffix = path and isDirectory(path) and "/" or ""
 
-                terminalPrint(entries[i] .. suffix)
+                    terminalPrint(entries[i] .. suffix)
+                end
             end
 
         elseif cmd == "cd" then
             local target = args[2] or "/"
 
-            if target == ".." then
-                currentPath = currentPath:match("^(.*)/[^/]+$") or "/"
+            local destination
+
+            if target:sub(1, 1) == "/" then
+                destination = normalizePath(target)
             else
-                local path
+                destination = normalizePath(currentDirectory .. "/" .. target)
+            end
 
-                if target:sub(1, 1) == "/" then
-                    path = normalizePath(target)
-                else
-                    path = joinPath(currentPath, target)
-                end
-
-                if fsExists(filesystem, path) and
-                    filesystem.isDirectory(path) then
-                    currentPath = path
-                else
-                    terminalPrint("Directory not found.", C.close)
-                end
+            if pathExists(destination) and isDirectory(destination) then
+                currentDirectory = destination
+            else
+                terminalPrint("Directory not found.", C.close)
             end
 
         elseif cmd == "mkdir" then
-            local name = args[2]
-
-            if not name then
-                terminalPrint("Usage: mkdir foldername", C.muted)
+            if not args[2] then
+                terminalPrint("Usage: mkdir NAME", C.close)
             else
-                local ok, reason = createFolder(
-                    joinPath(currentPath, name))
+                local destination = joinPath(currentDirectory, args[2])
 
-                terminalPrint(ok and "Folder created." or reason,
-                    ok and C.accent or C.close)
+                local success, reason = destination and
+                    createFolder(destination)
+
+                if success then
+                    terminalPrint("Folder created.", C.accent)
+                else
+                    terminalPrint(reason or "Invalid folder name.", C.close)
+                end
             end
 
         elseif cmd == "touch" then
-            local name = args[2]
-
-            if not name then
-                terminalPrint("Usage: touch filename", C.muted)
+            if not args[2] then
+                terminalPrint("Usage: touch NAME", C.close)
             else
-                local ok, reason = writeTextFile(
-                    joinPath(currentPath, name), "")
+                local destination = joinPath(currentDirectory, args[2])
 
-                terminalPrint(ok and "File created." or reason,
-                    ok and C.accent or C.close)
+                local success, reason = destination and
+                    createFile(destination, "")
+
+                if success then
+                    terminalPrint("File created.", C.accent)
+                else
+                    terminalPrint(reason or "Invalid file name.", C.close)
+                end
             end
 
         elseif cmd == "cat" then
-            local name = args[2]
-
-            if not name then
-                terminalPrint("Usage: cat filename", C.muted)
+            if not args[2] then
+                terminalPrint("Usage: cat NAME", C.close)
             else
-                local data = readTextFile(joinPath(currentPath, name))
+                local destination = joinPath(currentDirectory, args[2])
 
-                if data then
-                    terminalPrint(data)
+                if destination and pathExists(destination) and
+                    not isDirectory(destination) then
+
+                    terminalPrint(readFile(destination) or "")
                 else
                     terminalPrint("File not found.", C.close)
                 end
             end
 
-        elseif cmd == "write" then
-            local name = args[2]
-            local content = table.concat(args, " ", 3)
-
-            if not name then
-                terminalPrint("Usage: write filename text", C.muted)
-            else
-                local ok, reason = writeTextFile(
-                    joinPath(currentPath, name), content)
-
-                terminalPrint(ok and "File saved." or reason,
-                    ok and C.accent or C.close)
-            end
-
         elseif cmd == "rm" then
-            local name = args[2]
-
-            if not name then
-                terminalPrint("Usage: rm filename", C.muted)
+            if not args[2] then
+                terminalPrint("Usage: rm NAME", C.close)
             else
-                local ok, reason = deletePath(
-                    joinPath(currentPath, name))
+                local destination = joinPath(currentDirectory, args[2])
 
-                terminalPrint(ok and "Removed." or reason,
-                    ok and C.accent or C.close)
+                if destination then
+                    local success, reason = deletePath(destination)
+
+                    if success then
+                        terminalPrint("Deleted.", C.accent)
+                    else
+                        terminalPrint(reason, C.close)
+                    end
+                end
             end
+
+        elseif cmd == "rename" then
+            if not args[2] or not args[3] then
+                terminalPrint("Usage: rename OLD NEW", C.close)
+            else
+                local destination = joinPath(currentDirectory, args[2])
+
+                local success, reason = destination and
+                    renamePath(destination, args[3])
+
+                if success then
+                    terminalPrint("Renamed.", C.accent)
+                else
+                    terminalPrint(reason or "Rename failed.", C.close)
+                end
+            end
+
+        elseif cmd == "whoami" then
+            terminalPrint(currentUser.username)
+
+        elseif cmd == "about" then
+            terminalPrint("Meadows OS " .. VERSION)
+            terminalPrint("Forest Edition")
+            terminalPrint("Computer: " .. config.computerName)
+            terminalPrint("User: " .. currentUser.displayName)
+
+        elseif cmd == "reboot" then
+            computer.shutdown(true)
+
+        elseif cmd == "shutdown" then
+            computer.shutdown()
 
         else
             terminalPrint("Unknown command: " .. cmd, C.close)
+            terminalPrint("Type help for commands.")
         end
     end
 
-    while true do
-        clear()
+    while running do
+        clear(C.background)
 
-        put(2, 1, "MEADOWS TERMINAL", C.accent)
-        put(W - 13, 1, "[ESC] Close", C.muted)
+        rect(2, 2, W - 4, H - 4, C.panel)
+        rect(2, 2, W - 4, 1, C.titlebar)
 
-        rect(2, 3, W - 4, H - 6, C.panel)
+        put(4, 2, "MEADOWS TERMINAL", C.white)
 
         for i = 1, #history do
-            put(4, 3 + i, history[i].text, history[i].color)
-        end
+            local y = 4 + i
 
-        rect(2, H - 2, W - 4, 1, C.titlebar)
-        put(3, H - 2, currentPath .. " >", C.accent)
-
-        local command = inputLine(
-            currentPath .. " >", false)
-
-        if command == nil then
-            return
-        end
-
-        executeCommand(command)
-    end
-end
-
--- ==========================================
--- 20. SETTINGS APP
--- ==========================================
-
-local function settingsApp()
-    while true do
-        clear()
-
-        center(2, "MEADOWS SETTINGS", C.accent)
-        center(4, "Manage your computer", C.muted)
-
-        put(4, 7, "1. Change computer name", C.text)
-        put(4, 9, "2. Change display name", C.text)
-        put(4, 11, "3. Change password", C.text)
-        put(4, 13, "4. Storage information", C.text)
-        put(4, 15, "5. About Meadows", C.text)
-
-        center(H - 2, "Press 1-5 or ESC to close", C.muted)
-
-        local signal, address, char, code = computer.pullSignal()
-
-        if signal == "key_down" then
-            if code == 1 then
-                return
-
-            elseif char == 49 then
-                local name = inputLine("New computer name", false)
-
-                if name and name ~= "" then
-                    config.computerName =
-                        cleanField(name):gsub("[^%w_%-]", "")
-
-                    if not saveConfig() then
-                        messageScreen("Settings", "Could not save settings.")
-                    end
-                end
-
-            elseif char == 50 then
-                local display = inputLine("New display name", false)
-
-                if display and display ~= "" then
-                    currentUser.display = cleanField(display)
-
-                    if not saveAccounts() then
-                        messageScreen("Settings", "Could not save account.")
-                    end
-                end
-
-            elseif char == 51 then
-                local oldPassword = inputLine("Current password", true)
-
-                if verifyPassword(currentUser, oldPassword) then
-                    local newPassword = inputLine("New password", true)
-
-                    if newPassword and #newPassword >= 4 then
-                        local confirm = inputLine("Confirm new password", true)
-
-                        if confirm == newPassword then
-                            local oldHash = currentUser.hash
-                            local oldSalt = currentUser.salt
-
-                            currentUser.salt =
-                                tostring(math.floor(computer.uptime() * 1000))
-
-                            currentUser.hash =
-                                hashPassword(newPassword, currentUser.salt)
-
-                            if not saveAccounts() then
-                                currentUser.hash = oldHash
-                                currentUser.salt = oldSalt
-                                messageScreen("Settings", "Could not save password.")
-                            else
-                                messageScreen("Settings", "Password changed.")
-                            end
-                        else
-                            messageScreen("Settings", "Passwords do not match.")
-                        end
-                    else
-                        messageScreen("Settings", "Password must be at least 4 characters.")
-                    end
-                else
-                    messageScreen("Settings", "Current password incorrect.")
-                end
-
-            elseif char == 52 then
-                messageScreen("Storage",
-                    "Drive: " .. selectedDisk.label ..
-                    " | Used: " .. tostring(selectedDisk.used) ..
-                    " | Total: " .. tostring(selectedDisk.total))
-
-            elseif char == 53 then
-                messageScreen("About Meadows",
-                    "Meadows OS 1.1 - Forest Edition")
+            if y < H - 4 then
+                put(4, y, history[i].text, history[i].color)
             end
         end
-    end
-end
 
--- ==========================================
--- 21. ABOUT APP
--- ==========================================
+        put(4, H - 4, currentDirectory .. " >", C.accent)
 
-local function aboutApp()
-    clear()
+        local command = inputDialog(
+            "Terminal command",
+            "Enter a command:"
+        )
 
-    center(3, "MEADOWS OS", C.accent)
-    center(5, "Version 1.1 - Forest Edition", C.white)
-
-    center(8, "An independent OpenComputers operating system.", C.text)
-    center(10, "Designed for a simple desktop experience.", C.muted)
-    center(12, "Storage: " .. selectedDisk.label, C.muted)
-
-    center(H - 2, "Press any key to close", C.accent)
-
-    while true do
-        local signal = computer.pullSignal()
-
-        if signal == "key_down" then
-            break
+        if command == nil then
+            running = false
+        elseif command ~= "" then
+            executeCommand(command)
         end
     end
 end
 
--- ==========================================
--- 22. APP REGISTRY
--- ==========================================
+-- =========================================================
+-- MEADOWS OS 1.2
+-- PART 4 OF 4
+-- DESKTOP, TASKBAR, START MENU AND SYSTEM
+-- =========================================================
+
+-- ---------------------------------------------------------
+-- Wallpaper presets
+-- ---------------------------------------------------------
+
+local wallpapers = {
+    0x102019,
+    0x101B30,
+    0x241B30,
+    0x202020,
+    0x0B2528
+}
+
+local wallpaperNames = {
+    "Forest",
+    "Midnight",
+    "Purple",
+    "Dark",
+    "Ocean"
+}
+
+local function getWallpaper()
+    local index = tonumber(config.wallpaper) or 1
+    return wallpapers[index] or wallpapers[1]
+end
+
+-- ---------------------------------------------------------
+-- Desktop application registry
+-- ---------------------------------------------------------
 
 local apps = {
     {
+        id = "files",
         name = "Files",
-        icon = "▣",
-        description = "Browse your files",
+        icon = "[F]",
         run = filesApp
     },
     {
+        id = "notes",
         name = "Notes",
-        icon = "▤",
-        description = "Write your notes",
+        icon = "[N]",
         run = notesApp
     },
     {
+        id = "terminal",
         name = "Terminal",
-        icon = ">_",
-        description = "Command terminal",
+        icon = "[T]",
         run = terminalApp
     },
     {
+        id = "settings",
         name = "Settings",
-        icon = "⚙",
-        description = "System settings",
-        run = settingsApp
+        icon = "[S]"
     },
     {
+        id = "about",
         name = "About",
-        icon = "i",
-        description = "About Meadows",
-        run = aboutApp
+        icon = "[?]"
     }
 }
 
-local function findApp(name)
+local function findApp(id)
     for i = 1, #apps do
-        if apps[i].name:lower() == tostring(name):lower() then
+        if apps[i].id == id then
             return apps[i]
         end
     end
@@ -2045,497 +2182,536 @@ local function findApp(name)
     return nil
 end
 
-local function launchApp(name)
-    local app = findApp(name)
+-- ---------------------------------------------------------
+-- Application launcher
+-- ---------------------------------------------------------
 
-    if not app then
-        return false
-    end
-
-    -- The application runs as a foreground app.
-    -- Part 3 supplies the desktop and taskbar around it.
-    app.run()
-
-    return true
-end
-
--- ==========================================
--- CHANGE 4.4
--- PART 3 OF 3
--- DESKTOP AND MAIN EVENT LOOP
--- ==========================================
-
--- ==========================================
--- 23. DESKTOP STATE
--- ==========================================
-
-local desktopSelection = 1
-local desktopScroll = 0
-local desktopMenuOpen = false
-local desktopMenuSelection = 1
-local desktopMenuItems = {
-    "Files",
-    "Notes",
-    "Terminal",
-    "Settings",
-    "About",
-    "Log out",
-    "Restart",
-    "Shutdown"
-}
-
-local running = true
-local clockText = "MEADOWS"
-
--- ==========================================
--- 24. DESKTOP ICON LAYOUT
--- ==========================================
-
-local function drawDesktopIcon(x, y, icon, name, selected)
-    if selected then
-        rect(x - 1, y - 1, 9, 5, C.accentDark)
-    end
-
-    rect(x + 1, y, 5, 3, C.panel2)
-    put(x + 3, y + 1, icon, C.accent)
-
-    local label = tostring(name)
-    if #label > 9 then
-        label = label:sub(1, 8) .. "."
-    end
-
-    put(x - 1, y + 4, label, C.white)
-end
-
-local function desktopColumns()
-    return math.max(1, math.floor((W - 4) / 12))
-end
-
-local function drawDesktopIcons()
-    local columns = desktopColumns()
-    local startY = 3
-    local rowGap = 7
-
-    for i = 1, #apps do
-        local index = i - desktopScroll
-
-        if index > 0 then
-            local col = (index - 1) % columns
-            local row = math.floor((index - 1) / columns)
-
-            local x = 3 + col * 12
-            local y = startY + row * rowGap
-
-            if y < H - 6 then
-                drawDesktopIcon(
-                    x,
-                    y,
-                    apps[i].icon,
-                    apps[i].name,
-                    desktopSelection == i
-                )
-            end
-        end
-    end
-end
-
--- ==========================================
--- 25. TASKBAR
--- ==========================================
-
-local function drawTaskbar()
-    local taskbarY = H - 3
-
-    rect(1, taskbarY, W, 3, C.panel)
-
-    -- Top border
-    rect(1, taskbarY, W, 1, C.border)
-
-    local items = {
-        {name = "Start", icon = "M"},
-        {name = "Files", icon = "F"},
-        {name = "Notes", icon = "N"},
-        {name = "Terminal", icon = ">_"},
-        {name = "Settings", icon = "S"}
-    }
-
-    local totalWidth = 0
-
-    for i = 1, #items do
-        totalWidth = totalWidth + #items[i].icon + 4
-    end
-
-    local startX = math.floor((W - totalWidth) / 2) + 1
-
-    for i = 1, #items do
-        local item = items[i]
-        local itemWidth = #item.icon + 4
-
-        rect(startX, taskbarY + 1, itemWidth, 2, C.panel2)
-        put(startX + 2, taskbarY + 1, item.icon, C.accent)
-
-        startX = startX + itemWidth + 1
-    end
-
-    -- Clock / status on right
-    put(W - 13, taskbarY + 1, "MEADOWS", C.accent)
-    put(W - 13, taskbarY + 2, "v1.1", C.muted)
-end
-
--- ==========================================
--- 26. START MENU
--- ==========================================
-
-local function drawStartMenu()
-    local menuW = math.min(34, W - 4)
-    local menuH = math.min(15, H - 5)
-
-    local x = math.floor((W - menuW) / 2)
-    local y = H - menuH - 3
-
-    rect(x, y, menuW, menuH, C.panel)
-    rect(x, y, menuW, 2, C.titlebar)
-
-    put(x + 2, y, "MEADOWS START", C.accent)
-    put(x + 2, y + 3, "Welcome, " .. currentUser.display, C.white)
-
-    local visible = menuH - 6
-
-    for i = 1, #desktopMenuItems do
-        local row = y + 5 + i
-
-        if row >= y + menuH - 1 then
-            break
-        end
-
-        if desktopMenuSelection == i then
-            rect(x + 1, row, menuW - 2, 1, C.accentDark)
-        end
-
-        put(x + 3, row, desktopMenuItems[i], C.text)
-    end
-end
-
--- ==========================================
--- 27. DESKTOP DRAWING
--- ==========================================
-
-local function drawDesktop()
-    rect(1, 1, W, H, C.desktop)
-
-    -- Subtle forest-style background
-    for y = 1, H - 4 do
-        if y % 4 == 0 then
-            rect(1, y, W, 1, C.background)
-        end
-    end
-
-    put(3, 1, "MEADOWS", C.accent)
-    put(12, 1, config.computerName, C.muted)
-
-    drawDesktopIcons()
-    drawTaskbar()
-
-    if desktopMenuOpen then
-        drawStartMenu()
-    end
-end
-
--- ==========================================
--- 28. DESKTOP APP LAUNCHER
--- ==========================================
-
-local function runDesktopApp(index)
-    local app = apps[index]
+local function launchApp(id)
+    local app = findApp(id)
 
     if not app then
         return
     end
 
-    clear()
-
-    local ok, err = pcall(app.run)
-
-    if not ok then
-        messageScreen(
-            "Application error",
-            tostring(err):sub(1, 100)
-        )
+    if app.run then
+        app.run()
+    elseif id == "settings" then
+        -- Settings is defined below.
+    elseif id == "about" then
+        -- About is defined below.
     end
 end
 
--- ==========================================
--- 29. START MENU ACTIONS
--- ==========================================
+-- ---------------------------------------------------------
+-- Settings application
+-- ---------------------------------------------------------
 
-local function handleStartMenu()
-    local selected = desktopMenuItems[desktopMenuSelection]
+local function settingsApp()
+    local selection = 1
 
-    if selected == "Log out" then
-        currentUser = nil
-        desktopMenuOpen = false
-        loginScreen()
+    local options = {
+        "Computer name",
+        "Change password",
+        "Wallpaper",
+        "Storage information",
+        "System information",
+        "Return to desktop"
+    }
 
-    elseif selected == "Restart" then
-        computer.shutdown(true)
+    while true do
+        clear(C.background)
 
-    elseif selected == "Shutdown" then
-        computer.shutdown(false)
+        rect(2, 2, W - 4, H - 4, C.panel)
+        rect(2, 2, W - 4, 1, C.titlebar)
 
-    else
-        desktopMenuOpen = false
+        put(4, 2, "MEADOWS SETTINGS", C.white)
 
-        if selected == "Files" then
-            runDesktopApp(1)
-        elseif selected == "Notes" then
-            runDesktopApp(2)
-        elseif selected == "Terminal" then
-            runDesktopApp(3)
-        elseif selected == "Settings" then
-            runDesktopApp(4)
-        elseif selected == "About" then
-            runDesktopApp(5)
+        put(4, 4, "Personalize and manage your system.", C.muted)
+
+        for i = 1, #options do
+            local y = 7 + (i - 1) * 2
+
+            if i == selection then
+                rect(3, y, W - 6, 1, C.accentDark)
+            end
+
+            put(5, y, options[i], C.text)
+        end
+
+        center(H - 2, "UP/DOWN: Select     ENTER: Open     ESC: Back", C.muted)
+
+        local signal, address, char, code = computer.pullSignal()
+
+        if signal == "key_down" then
+            if code == 1 then
+                return
+
+            elseif code == 200 then
+                selection = math.max(1, selection - 1)
+
+            elseif code == 208 then
+                selection = math.min(#options, selection + 1)
+
+            elseif code == 28 then
+                if selection == 1 then
+                    local name = inputDialog(
+                        "Computer name",
+                        "Enter your new computer name:"
+                    )
+
+                    if name and name ~= "" then
+                        config.computerName = cleanValue(name)
+                        saveConfig()
+
+                        messageDialog(
+                            "Settings saved",
+                            "Computer name updated."
+                        )
+                    end
+
+                elseif selection == 2 then
+                    local oldPassword = inputDialog(
+                        "Current password",
+                        "Enter your current password:",
+                        true
+                    )
+
+                    if oldPassword then
+                        if verifyPassword(
+                            oldPassword,
+                            currentUser.passwordHash
+                        ) then
+                            local newPassword = inputDialog(
+                                "New password",
+                                "Enter your new password:",
+                                true
+                            )
+
+                            if newPassword and newPassword ~= "" then
+                                local confirmPassword = inputDialog(
+                                    "Confirm password",
+                                    "Enter your new password again:",
+                                    true
+                                )
+
+                                if confirmPassword == newPassword then
+                                    currentUser.passwordHash =
+                                        hashPassword(newPassword)
+
+                                    local success, reason = saveAccounts()
+
+                                    if success then
+                                        messageDialog(
+                                            "Password changed",
+                                            "Your password has been updated."
+                                        )
+                                    else
+                                        messageDialog(
+                                            "Save failed",
+                                            tostring(reason)
+                                        )
+                                    end
+                                else
+                                    messageDialog(
+                                        "Password mismatch",
+                                        "The new passwords do not match."
+                                    )
+                                end
+                            end
+                        else
+                            messageDialog(
+                                "Incorrect password",
+                                "Your current password was incorrect."
+                            )
+                        end
+                    end
+
+                elseif selection == 3 then
+                    local wallpaperSelection =
+                        tonumber(config.wallpaper) or 1
+
+                    while true do
+                        clear(C.background)
+
+                        center(3, "CHOOSE WALLPAPER", C.accent)
+
+                        for i = 1, #wallpaperNames do
+                            local y = 7 + (i - 1) * 2
+
+                            if i == wallpaperSelection then
+                                rect(5, y, W - 10, 1, C.accentDark)
+                            end
+
+                            put(7, y, wallpaperNames[i], C.white)
+                        end
+
+                        center(H - 2, "UP/DOWN: Select     ENTER: Apply     ESC: Back", C.muted)
+
+                        local s, a, ch, co = computer.pullSignal()
+
+                        if s == "key_down" then
+                            if co == 1 then
+                                break
+
+                            elseif co == 200 then
+                                wallpaperSelection = math.max(
+                                    1,
+                                    wallpaperSelection - 1
+                                )
+
+                            elseif co == 208 then
+                                wallpaperSelection = math.min(
+                                    #wallpaperNames,
+                                    wallpaperSelection + 1
+                                )
+
+                            elseif co == 28 then
+                                config.wallpaper = wallpaperSelection
+                                saveConfig()
+
+                                messageDialog(
+                                    "Wallpaper updated",
+                                    "Your desktop wallpaper has been changed."
+                                )
+
+                                break
+                            end
+                        end
+                    end
+
+                elseif selection == 4 then
+                    local free = math.max(
+                        0,
+                        selectedDisk.total - selectedDisk.used
+                    )
+
+                    messageDialog(
+                        "Storage information",
+                        "Drive: " .. selectedDisk.label ..
+                        "\nAddress: " .. STORAGE_ADDRESS ..
+                        "\nTotal: " .. math.floor(selectedDisk.total / 1024) .. " KB" ..
+                        "\nUsed: " .. math.floor(selectedDisk.used / 1024) .. " KB" ..
+                        "\nFree: " .. math.floor(free / 1024) .. " KB"
+                    )
+
+                elseif selection == 5 then
+                    messageDialog(
+                        "System information",
+                        "Operating system: Meadows OS" ..
+                        "\nVersion: " .. VERSION ..
+                        "\nEdition: Forest Edition" ..
+                        "\nComputer: " .. config.computerName ..
+                        "\nUser: " .. currentUser.username ..
+                        "\nMaximum windows setting: " .. MAX_WINDOWS
+                    )
+
+                elseif selection == 6 then
+                    return
+                end
+            end
         end
     end
 end
 
--- ==========================================
--- 30. TASKBAR ACTIONS
--- ==========================================
+-- ---------------------------------------------------------
+-- About application
+-- ---------------------------------------------------------
 
-local function handleTaskbarClick(x)
-    local items = {
-        "Start",
-        "Files",
-        "Notes",
-        "Terminal",
-        "Settings"
+local function aboutApp()
+    clear(C.background)
+
+    rect(3, 3, W - 6, H - 6, C.panel)
+    rect(3, 3, W - 6, 1, C.titlebar)
+
+    center(6, "MEADOWS OS", C.accent)
+    center(8, "FOREST EDITION", C.white)
+
+    center(11, "Version " .. VERSION, C.text)
+    center(13, "A desktop operating system for OpenComputers.", C.muted)
+
+    center(16, "Computer: " .. config.computerName, C.text)
+    center(18, "User: " .. currentUser.displayName, C.text)
+
+    center(H - 3, "Press any key to return", C.accent)
+
+    waitForKey()
+end
+
+-- ---------------------------------------------------------
+-- Update application launcher
+-- ---------------------------------------------------------
+
+local function launchApp(id)
+    if id == "settings" then
+        settingsApp()
+
+    elseif id == "about" then
+        aboutApp()
+
+    else
+        local app = findApp(id)
+
+        if app and app.run then
+            app.run()
+        end
+    end
+end
+
+-- ---------------------------------------------------------
+-- Start menu
+-- ---------------------------------------------------------
+
+local function startMenu()
+    local selection = 1
+
+    local menuItems = {
+        {name = "Files", id = "files"},
+        {name = "Notes", id = "notes"},
+        {name = "Terminal", id = "terminal"},
+        {name = "Settings", id = "settings"},
+        {name = "About Meadows", id = "about"},
+        {name = "Restart", id = "restart"},
+        {name = "Shut down", id = "shutdown"}
     }
 
-    local totalWidth = 0
+    while true do
+        clear(getWallpaper())
 
-    for i = 1, #items do
-        totalWidth = totalWidth + #items[i] + 4
-    end
+        -- Background desktop.
+        center(3, "MEADOWS", C.accent)
+        center(5, "FOREST EDITION", C.muted)
 
-    local startX = math.floor((W - totalWidth) / 2) + 1
+        local menuWidth = math.min(34, W - 8)
+        local menuX = math.floor((W - menuWidth) / 2)
+        local menuY = math.max(2, H - 17)
 
-    for i = 1, #items do
-        local itemWidth = #items[i] + 4
+        rect(menuX, menuY, menuWidth, 15, C.panel)
+        rect(menuX, menuY, menuWidth, 1, C.titlebar)
 
-        if x >= startX and x <= startX + itemWidth then
-            if items[i] == "Start" then
-                desktopMenuOpen = not desktopMenuOpen
-                return
+        put(menuX + 2, menuY, "START", C.white)
+
+        for i = 1, #menuItems do
+            local y = menuY + 2 + (i - 1) * 1
+
+            if i == selection then
+                rect(menuX + 1, y, menuWidth - 2, 1, C.accentDark)
             end
 
-            desktopMenuOpen = false
+            put(menuX + 3, y, menuItems[i].name, C.text)
+        end
 
-            if items[i] == "Files" then
-                runDesktopApp(1)
-            elseif items[i] == "Notes" then
-                runDesktopApp(2)
-            elseif items[i] == "Terminal" then
-                runDesktopApp(3)
-            elseif items[i] == "Settings" then
-                runDesktopApp(4)
+        put(menuX + 2, menuY + 11, currentUser.displayName, C.accent)
+        put(menuX + 2, menuY + 13, "Meadows OS " .. VERSION, C.muted)
+
+        local signal, address, char, code, x, y, button =
+            computer.pullSignal()
+
+        if signal == "key_down" then
+            if code == 1 then
+                return
+
+            elseif code == 200 then
+                selection = math.max(1, selection - 1)
+
+            elseif code == 208 then
+                selection = math.min(#menuItems, selection + 1)
+
+            elseif code == 28 then
+                local id = menuItems[selection].id
+
+                if id == "restart" then
+                    computer.shutdown(true)
+                    return
+
+                elseif id == "shutdown" then
+                    computer.shutdown()
+                    return
+                else
+                    launchApp(id)
+                    return
+                end
+            end
+
+        elseif signal == "touch" then
+            if y >= menuY + 2 and y <= menuY + 8 then
+                local index = y - menuY - 1
+
+                if index >= 1 and index <= #menuItems then
+                    local id = menuItems[index].id
+
+                    if id == "restart" then
+                        computer.shutdown(true)
+                        return
+
+                    elseif id == "shutdown" then
+                        computer.shutdown()
+                        return
+                    else
+                        launchApp(id)
+                        return
+                    end
+                end
             end
 
             return
         end
-
-        startX = startX + itemWidth + 1
     end
 end
 
--- ==========================================
--- 31. DESKTOP KEYBOARD CONTROLS
--- ==========================================
+-- ---------------------------------------------------------
+-- Desktop rendering
+-- ---------------------------------------------------------
 
-local function handleDesktopKey(char, code)
-    if desktopMenuOpen then
-        if code == 1 then
-            desktopMenuOpen = false
+local desktopIcons = {
+    {id = "files", name = "Files", x = 4, y = 4},
+    {id = "notes", name = "Notes", x = 16, y = 4},
+    {id = "terminal", name = "Terminal", x = 4, y = 10},
+    {id = "settings", name = "Settings", x = 16, y = 10},
+    {id = "about", name = "About", x = 4, y = 16}
+}
 
-        elseif code == 200 then
-            desktopMenuSelection =
-                math.max(1, desktopMenuSelection - 1)
+local function drawDesktopIcon(icon)
+    rect(icon.x, icon.y, 7, 3, C.panel2)
+    rect(icon.x + 2, icon.y + 1, 3, 1, C.accentDark)
 
-        elseif code == 208 then
-            desktopMenuSelection =
-                math.min(#desktopMenuItems, desktopMenuSelection + 1)
-
-        elseif code == 28 then
-            handleStartMenu()
-        end
-
-        return
-    end
-
-    if code == 200 then
-        desktopSelection =
-            math.max(1, desktopSelection - 1)
-
-    elseif code == 208 then
-        desktopSelection =
-            math.min(#apps, desktopSelection + 1)
-
-    elseif code == 203 then
-        desktopSelection =
-            math.max(1, desktopSelection - 1)
-
-    elseif code == 205 then
-        desktopSelection =
-            math.min(#apps, desktopSelection + 1)
-
-    elseif code == 28 then
-        runDesktopApp(desktopSelection)
-
-    elseif char == 27 then
-        desktopMenuOpen = true
-        desktopMenuSelection = 1
-
-    elseif char == 49 then
-        runDesktopApp(1)
-
-    elseif char == 50 then
-        runDesktopApp(2)
-
-    elseif char == 51 then
-        runDesktopApp(3)
-
-    elseif char == 52 then
-        runDesktopApp(4)
-
-    elseif char == 53 then
-        runDesktopApp(5)
-    end
+    put(icon.x + 1, icon.y + 1, icon.id:sub(1, 1):upper(), C.white)
+    put(icon.x - 1, icon.y + 3, icon.name, C.text)
 end
 
--- ==========================================
--- 32. MOUSE SUPPORT
--- ==========================================
+local function taskbarLayout()
+    local count = 4
+    local spacing = 8
+    local startX = math.floor((W - (count * spacing - 1)) / 2)
 
-local function handleMouse(x, y, button)
-    if y >= H - 3 then
-        handleTaskbarClick(x)
-        return
-    end
-
-    if desktopMenuOpen then
-        local menuW = math.min(34, W - 4)
-        local menuH = math.min(15, H - 5)
-
-        local menuX = math.floor((W - menuW) / 2)
-        local menuY = H - menuH - 3
-
-        if x >= menuX and x <= menuX + menuW and
-            y >= menuY + 6 and y < menuY + menuH - 1 then
-
-            desktopMenuSelection = y - menuY - 5
-            handleStartMenu()
-        else
-            desktopMenuOpen = false
-        end
-
-        return
-    end
-
-    if y < 3 or y >= H - 6 then
-        return
-    end
-
-    local columns = desktopColumns()
-    local row = math.floor((y - 3) / 7)
-    local col = math.floor((x - 3) / 12)
-
-    local index = row * columns + col + 1 + desktopScroll
-
-    if index >= 1 and index <= #apps then
-        desktopSelection = index
-
-        if button == 0 then
-            runDesktopApp(index)
-        end
-    end
+    return {
+        startX = startX,
+        spacing = spacing,
+        count = count,
+        y = H - 2
+    }
 end
 
--- ==========================================
--- 33. SYSTEM STATUS
--- ==========================================
+local function drawTaskbar()
+    local layout = taskbarLayout()
 
-local function drawSystemStatus()
-    local freeMemory = 0
+    rect(1, H - 2, W, 2, C.panel)
 
-    if computer.freeMemory then
-        local ok, result = pcall(computer.freeMemory)
+    local items = {
+        {id = "start", label = "M"},
+        {id = "files", label = "F"},
+        {id = "notes", label = "N"},
+        {id = "terminal", label = "T"}
+    }
 
-        if ok then
-            freeMemory = tonumber(result) or 0
-        end
+    for i = 1, #items do
+        local x = layout.startX + (i - 1) * layout.spacing
+
+        rect(x, H - 2, 5, 2, C.panel2)
+        put(x + 2, H - 2, items[i].label, C.accent)
     end
 
-    put(2, H - 4,
-        "User: " .. currentUser.username ..
-        " | Free RAM: " .. tostring(math.floor(freeMemory / 1024)) .. " KB",
-        C.muted)
+    local clock = tostring(math.floor(computer.uptime())) .. "s"
+    put(W - #clock - 2, H - 2, clock, C.muted)
+
+    return items, layout
 end
 
--- ==========================================
--- 34. MAIN DESKTOP LOOP
--- ==========================================
+local function drawDesktop()
+    clear(getWallpaper())
 
-local function desktopLoop()
-    while running do
+    -- Decorative desktop heading.
+    put(4, 2, "MEADOWS", C.accent)
+    put(4, 3, "FOREST EDITION", C.white)
+
+    for i = 1, #desktopIcons do
+        drawDesktopIcon(desktopIcons[i])
+    end
+
+    put(4, H - 4, "Welcome, " .. currentUser.displayName, C.white)
+
+    drawTaskbar()
+end
+
+-- ---------------------------------------------------------
+-- Desktop event loop
+-- ---------------------------------------------------------
+
+local function desktop()
+    while true do
         drawDesktop()
-        drawSystemStatus()
 
-        local signal, address, x, y, button = computer.pullSignal(0.1)
+        local signal, address, char, code, x, y, button =
+            computer.pullSignal()
 
         if signal == "key_down" then
-            handleDesktopKey(x, y)
+            -- ESC opens Start menu.
+            if code == 1 then
+                startMenu()
+
+            -- Keyboard shortcuts.
+            elseif char == 102 or char == 70 then
+                launchApp("files")
+
+            elseif char == 110 or char == 78 then
+                launchApp("notes")
+
+            elseif char == 116 or char == 84 then
+                launchApp("terminal")
+
+            elseif char == 115 or char == 83 then
+                launchApp("settings")
+
+            elseif char == 97 or char == 65 then
+                launchApp("about")
+            end
 
         elseif signal == "touch" then
-            handleMouse(x, y, button)
+            local taskItems, layout = drawTaskbar()
 
-        elseif signal == "interrupted" then
-            -- Ignore Ctrl+C so the desktop does not terminate.
+            -- Taskbar buttons.
+            if y >= H - 2 then
+                for i = 1, #taskItems do
+                    local buttonX = layout.startX + (i - 1) * layout.spacing
+
+                    if x >= buttonX and x <= buttonX + 4 then
+                        local id = taskItems[i].id
+
+                        if id == "start" then
+                            startMenu()
+                        else
+                            launchApp(id)
+                        end
+
+                        break
+                    end
+                end
+
+            else
+                -- Desktop icons.
+                for i = 1, #desktopIcons do
+                    local icon = desktopIcons[i]
+
+                    if x >= icon.x - 1 and
+                        x <= icon.x + 7 and
+                        y >= icon.y and
+                        y <= icon.y + 4 then
+
+                        launchApp(icon.id)
+                        break
+                    end
+                end
+            end
         end
     end
 end
 
--- ==========================================
--- 35. START MEADOWS
--- ==========================================
+-- ---------------------------------------------------------
+-- Final startup
+-- ---------------------------------------------------------
 
-local function startMeadows()
-    while true do
-        if not currentUser then
-            loginScreen()
-        end
+clear(C.background)
 
-        desktopLoop()
+center(H - 2, "Loading Meadows desktop...", C.accent)
+computer.pullSignal(0.5)
 
-        if not running then
-            break
-        end
-    end
-end
-
-local success, errorMessage = pcall(startMeadows)
-
-if not success then
-    gpu.setBackground(C.background)
-    gpu.setForeground(C.close)
-    gpu.fill(1, 1, W, H, " ")
-
-    center(math.floor(H / 2) - 2, "MEADOWS SYSTEM ERROR", C.close)
-    center(math.floor(H / 2), tostring(errorMessage):sub(1, W - 4), C.text)
-    center(math.floor(H / 2) + 2, "Restart the computer to try again.", C.muted)
-
-    computer.pullSignal()
-end
-
--- ==========================================
--- END OF MEADOWS OS 1.1
--- ==========================================
+desktop()
