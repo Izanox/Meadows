@@ -6,8 +6,9 @@
 -- ==========================================
 
 
+
 -- ==========================================
--- 1. HARDWARE AND PERSISTENT STORAGE
+-- 1. HARDWARE AND RELIABLE PERSISTENT STORAGE
 -- ==========================================
 
 local gpuAddress = component.list("gpu")()
@@ -27,8 +28,11 @@ if W < 40 or H < 16 then
 end
 
 local computer = computer
+local DATA_DIR = "/.meadows"
+local CONFIG_FILE = DATA_DIR .. "/system.cfg"
+local ACCOUNTS_FILE = DATA_DIR .. "/accounts.db"
+local NOTES_FILE = DATA_DIR .. "/notes.txt"
 
--- Find boot device
 local bootAddress = nil
 
 if computer.getBootAddress then
@@ -36,105 +40,133 @@ if computer.getBootAddress then
     if ok then bootAddress = address end
 end
 
--- Find persistent storage
-local fsAddress = nil
-local fallbackWritable = nil
-local bootWritable = nil
-
-local DATA_DIR = "/.meadows"
-
-local function inspectFilesystem(address)
-    local ok, fs = pcall(component.proxy, address)
-
-    if not ok or not fs then
-        return nil, false, true
-    end
-
-    local hasData = false
-
-    local existsOK, exists = pcall(fs.exists, DATA_DIR)
-
-    if existsOK and exists then
-        hasData = true
-    end
-
-    local readOnly = true
-
-    if fs.isReadOnly then
-        local roOK, value = pcall(fs.isReadOnly)
-
-        if roOK then
-            readOnly = value
-        end
-    else
-        readOnly = false
-    end
-
-    return fs, hasData, readOnly
-end
-
-local addresses = {}
+local filesystems = {}
 
 for address in component.list("filesystem") do
-    addresses[#addresses + 1] = address
-end
+    local ok, fs = pcall(component.proxy, address)
 
--- FIRST: Find existing Meadows installation
-for _, address in ipairs(addresses) do
-    local fs, hasData, readOnly = inspectFilesystem(address)
+    if ok and fs then
+        local readOnly = true
 
-    if fs and hasData then
-        if readOnly then
-            error("Meadows: Existing installation is read-only!")
+        if fs.isReadOnly then
+            local roOK, value = pcall(fs.isReadOnly)
+            if roOK then readOnly = value end
         end
 
-        fsAddress = address
+        local function exists(path)
+            local success, result = pcall(fs.exists, path)
+            return success and result == true
+        end
+
+        filesystems[#filesystems + 1] = {
+            address = address,
+            fs = fs,
+            readOnly = readOnly,
+            hasConfig = exists(CONFIG_FILE),
+            hasAccounts = exists(ACCOUNTS_FILE),
+            hasNotes = exists(NOTES_FILE),
+            hasDirectory = exists(DATA_DIR)
+        }
+    end
+end
+
+if #filesystems == 0 then
+    error("Meadows: No filesystem devices found")
+end
+
+local selected = nil
+
+-- PRIORITY 1: Find an existing installation with account data.
+for _, disk in ipairs(filesystems) do
+    if not disk.readOnly and disk.hasAccounts then
+        selected = disk
         break
     end
 end
 
--- SECOND: Prefer a writable non-boot disk
-if not fsAddress then
-    for _, address in ipairs(addresses) do
-        if address ~= bootAddress then
-            local fs, hasData, readOnly = inspectFilesystem(address)
-
-            if fs and not readOnly then
-                fallbackWritable = address
-                break
-            end
+-- PRIORITY 2: Find an existing installation with configuration.
+if not selected then
+    for _, disk in ipairs(filesystems) do
+        if not disk.readOnly and disk.hasConfig then
+            selected = disk
+            break
         end
     end
 end
 
--- THIRD: Use boot device if no other disk exists
-if not fsAddress then
-    fsAddress = fallbackWritable
-end
-
-if not fsAddress and bootAddress then
-    local fs, _, readOnly = inspectFilesystem(bootAddress)
-
-    if fs and not readOnly then
-        fsAddress = bootAddress
+-- PRIORITY 3: Find an existing Meadows directory.
+if not selected then
+    for _, disk in ipairs(filesystems) do
+        if not disk.readOnly and disk.hasDirectory then
+            selected = disk
+            break
+        end
     end
 end
 
-if not fsAddress then
-    error("Meadows: No writable filesystem found!")
+-- PRIORITY 4: Prefer a writable disk other than the boot device.
+if not selected then
+    for _, disk in ipairs(filesystems) do
+        if not disk.readOnly and disk.address ~= bootAddress then
+            selected = disk
+            break
+        end
+    end
 end
 
-local filesystem = component.proxy(fsAddress)
-
-if not filesystem then
-    error("Meadows: Cannot access selected filesystem")
+-- PRIORITY 5: Use the writable boot device if necessary.
+if not selected then
+    for _, disk in ipairs(filesystems) do
+        if not disk.readOnly and disk.address == bootAddress then
+            selected = disk
+            break
+        end
+    end
 end
+
+if not selected then
+    error("Meadows: No writable storage device found!")
+end
+
+local fsAddress = selected.address
+local filesystem = selected.fs
+
+-- Verify that the selected device is still writable.
+local readOnlyOK, isReadOnly = pcall(filesystem.isReadOnly)
+
+if readOnlyOK and isReadOnly then
+    error("Meadows: Selected storage device is read-only!")
+end
+
+-- Create the Meadows directory if necessary.
+local existsOK, directoryExists = pcall(filesystem.exists, DATA_DIR)
+
+if not existsOK then
+    error("Meadows: Cannot inspect storage directory")
+end
+
+if not directoryExists then
+    local makeOK, result = pcall(filesystem.makeDirectory, DATA_DIR)
+
+    if not makeOK or result == false then
+        error("Meadows: Cannot create system directory")
+    end
+end
+
+-- Verify that the directory really exists.
+local verifyOK, verified = pcall(filesystem.exists, DATA_DIR)
+
+if not verifyOK or not verified then
+    error("Meadows: Storage directory verification failed")
+end
+
+-- Display selected storage information in the monitor.
+local STORAGE_ADDRESS = fsAddress
 
 -- 2. CONFIGURATION
 local OS_NAME = "Meadows"
 local VERSION = "1.0"
 local MAX_WINDOWS = 2
-local DATA_DIR = "/.meadows"
 local CONFIG_FILE = DATA_DIR .. "/system.cfg"
 local ACCOUNTS_FILE = DATA_DIR .. "/accounts.db"
 local NOTES_FILE = DATA_DIR .. "/notes.txt"
