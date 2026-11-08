@@ -1,5 +1,5 @@
 -- =========================================================
--- CHANGE 1.0
+-- CHANGE 1.1
 -- MEADOWS OS 3.0 - FOREST EDITION
 -- Native OpenComputers BIOS kernel
 -- =========================================================
@@ -1968,7 +1968,7 @@ local function desktopLoop()
       end
     end
 
-    if sig then
+    if sig and not (sig == "key_down" and focused) then
       drawAll()
     end
   end
