@@ -1,6 +1,6 @@
 -- =========================================================
--- CHANGE 5.6
--- MEADOWS OS 2.2 - FOREST EDITION
+-- CHANGE 6
+-- MEADOWS OS 2.4 - FOREST EDITION
 -- Native OpenComputers BIOS kernel
 -- =========================================================
 -- Install as the kernel loaded by your EEPROM.
@@ -37,7 +37,7 @@ if W < 50 or H < 20 then
 end
 pcall(gpu.setDepth, 8)
 
-local VERSION = "2.2"
+local VERSION = "2.4"
 local OS_NAME = "Meadows"
 local MAX_WINDOWS = 4
 local C = {
@@ -661,10 +661,26 @@ end
 
 local function copyFile(source, destination)
   source, destination = normalizePath(source), normalizePath(destination)
-  if filesystem.isDirectory(source) then return false, "Folder copy is not supported yet." end
+  if filesystem.isDirectory(source) then return false, "Source is a folder." end
   local data = readFile(source)
   if data == nil then return false, "Could not read source file." end
   return writeFile(destination, data)
+end
+
+local function copyPath(source, destination)
+  source, destination = normalizePath(source), normalizePath(destination)
+  if filesystem.exists(destination) then return false, "Destination already exists." end
+  if filesystem.isDirectory(source) then
+    local ok, result = pcall(filesystem.makeDirectory, destination)
+    if not ok or result == false or not filesystem.exists(destination) then return false, "Could not create destination folder." end
+    local entries = listDirectory(source)
+    for i = 1, #entries do
+      local childOK, childErr = copyPath(pathJoin(source, entries[i]), pathJoin(destination, entries[i]))
+      if not childOK then return false, childErr end
+    end
+    return true
+  end
+  return copyFile(source, destination)
 end
 
 local function deletePath(path)
@@ -794,7 +810,7 @@ local function openWindow(app)
   }
   if win.w < 38 then win.w = W - 4 end
   if win.h < 12 then win.h = H - 5 end
-  if app == "files" then win.title = "File Explorer"; win.state.path = "/"; win.state.selected = nil; win.state.scroll = 0; win.state.clipboard = nil; win.state.clipMode = nil
+  if app == "files" then win.title = "File Explorer"; win.state.path = "/"; win.state.selected = nil; win.state.scroll = 0; win.state.clipboard = nil; win.state.clipMode = nil; win.state.history = {"/"}; win.state.historyIndex = 1; win.state.gridMode = false; win.state.sidebar = 16
   elseif app == "notes" then win.title = "Meadows Notes"; win.state.text = loadNotes(); win.state.cursor = textLen(loadNotes()) + 1; win.state.scroll = 0; win.state.dirty = false
   elseif app == "editor" then win.title = "Text Editor"; win.state.path = "/"; win.state.text = ""; win.state.cursor = 1; win.state.scroll = 0; win.state.dirty = false
   elseif app == "picture" then win.title = "Picture Viewer"; win.state.path = ""; win.state.picture = nil
@@ -949,40 +965,92 @@ local function drawWindow(win, active)
     if active and math.floor(computer.uptime() * 2) % 2 == 0 then put(cursorX, y + h - 2, "|", C.accent, C.input) end
   elseif win.app == "files" then
     local s = win.state
-    put(x + 2, y + 2, "Location: " .. s.path, C.accent, C.window)
-    local tools = {"Up", "NewFolder", "NewFile", "Open", "Rename", "Copy", "Cut", "Paste", "Delete"}
-    local bx = x + 2
-    local by = y + 4
+    local sideW = math.min(s.sidebar or 16, math.max(12, math.floor(w * 0.28)))
+    local mainX = x + sideW + 2
+    local mainW = w - sideW - 3
+    -- Meadows-native Finder layout: forest sidebar, compact path/navigation strip.
+    rect(x + 1, y + 1, sideW, h - 2, C.panel)
+    put(x + 2, y + 2, "FAVOURITES", C.accent, C.panel)
+    local favs = {{"Root", "/"}}
+    local candidates = {{"Home", "/home"}, {"Desktop", "/home/desktop"}, {"Applications", "/apps"}, {"Programs", "/usr"}, {"Temporary", "/tmp"}}
+    for i = 1, #candidates do
+      local ok, exists = pcall(filesystem.exists, candidates[i][2])
+      local isDir = false
+      if ok and exists then pcall(function() isDir = filesystem.isDirectory(candidates[i][2]) end) end
+      if isDir then favs[#favs + 1] = candidates[i] end
+    end
+    s.sidebarRows = {}
+    for i = 1, #favs do
+      local row = y + 4 + (i - 1)
+      if row < y + h - 3 then
+        local path = favs[i][2]
+        local label = (s.path == path and "> " or "  ") .. favs[i][1]
+        put(x + 2, row, label, s.path == path and C.white or C.text, C.panel)
+        s.sidebarRows[#s.sidebarRows + 1] = {x=x+1,y=row,w=sideW,path=path,enabled=true}
+      end
+    end
+    put(mainX, y + 2, "‹", C.accent, C.window); put(mainX + 2, y + 2, "›", C.accent, C.window)
+    put(mainX + 5, y + 2, "↑", C.accent, C.window)
+    put(mainX + 8, y + 2, "PATH", C.muted, C.window)
+    put(mainX + 13, y + 2, s.path, C.accent, C.window)
+    s.nav = {back={x=mainX,y=y+2},forward={x=mainX+2,y=y+2},up={x=mainX+5,y=y+2}}
+    local tools = {"New Folder", "New File", "Open", "Rename", "Copy", "Cut", "Paste", "Delete", s.gridMode and "List View" or "Grid View"}
+    local bx, by = mainX, y + 4
     s.buttons = {}
     for i = 1, #tools do
       local label = tools[i]
       local width = #label + 2
-      if bx + width > x + w - 2 then bx = x + 2; by = by + 2 end
-      button(bx, by, width, label, false)
-      s.buttons[#s.buttons + 1] = {label = label, x = bx, y = by, w = width}
+      if bx + width > x + w - 2 then bx = mainX; by = by + 2 end
+      if by < y + h - 5 then
+        button(bx, by, width, label, false)
+        s.buttons[#s.buttons + 1] = {label = label, x = bx, y = by, w = width}
+      end
       bx = bx + width + 1
     end
     local listY = by + 2
     s.listY = listY
-    put(x + 2, listY - 1, "NAME", C.accent, C.window)
+    put(mainX, listY - 1, "NAME", C.accent, C.window)
     local entries = listDirectory(s.path)
     s.entries = entries
     local visible = math.max(1, y + h - 3 - listY)
     s.visible = visible
-    for i = 1, visible do
-      local index = i + s.scroll
-      local entry = entries[index]
-      if entry then
+    s.gridCells = {}
+    if s.gridMode then
+      local columns = math.max(1, math.floor(mainW / 16))
+      local rows = math.max(1, math.floor(visible / 2))
+      local capacity = columns * rows
+      for i = 1, math.min(capacity, #entries - s.scroll) do
+        local index = i + s.scroll
+        local col = (i - 1) % columns
+        local row = math.floor((i - 1) / columns)
+        local cx = mainX + col * math.floor(mainW / columns)
+        local cy = listY + row * 2
+        local entry = entries[index]
         local full = pathJoin(s.path, entry)
         local folder = false
         pcall(function() folder = filesystem.isDirectory(full) end)
-        local row = listY + i - 1
         local selected = s.selected == entry
-        if selected then rect(x + 1, row, w - 2, 1, C.select) end
-        put(x + 2, row, (folder and "[DIR] " or "      ") .. entry, C.white, selected and C.select or C.window)
+        if selected then rect(cx - 1, cy, math.floor(mainW / columns) - 1, 2, C.select) end
+        put(cx, cy, folder and "[DIR]" or "[FILE]", C.accent, selected and C.select or C.window)
+        put(cx, cy + 1, entry, C.white, selected and C.select or C.window)
+        s.gridCells[#s.gridCells + 1] = {x=cx-1,y=cy,w=math.floor(mainW / columns)-1,h=2,name=entry}
+      end
+    else
+      for i = 1, visible do
+        local index = i + s.scroll
+        local entry = entries[index]
+        if entry then
+          local full = pathJoin(s.path, entry)
+          local folder = false
+          pcall(function() folder = filesystem.isDirectory(full) end)
+          local row = listY + i - 1
+          local selected = s.selected == entry
+          if selected then rect(mainX - 1, row, mainW, 1, C.select) end
+          put(mainX, row, (folder and "▸  " or "   ") .. entry, C.white, selected and C.select or C.window)
+        end
       end
     end
-    put(x + 2, y + h - 2, s.selected and ("Selected: " .. s.selected) or "Select an item", C.muted, C.window)
+    put(mainX, y + h - 2, s.selected and ("Selected: " .. s.selected) or (tostring(#entries) .. " items"), C.muted, C.window)
   elseif win.app == "settings" then
     put(x + 2, y + 2, "PERSONALIZATION", C.accent, C.window)
     for i = 1, #wallpapers do
@@ -1179,6 +1247,7 @@ local function editTextKey(win, char, code, ctrl)
   -- Avoid writing to disk on every keystroke; this caused visible lag on OC drives.
 end
 
+local explorerNavigate
 local function handleWindowKey(win, char, code, ctrl, alt)
   local s = win.state
   if alt and code == 62 then
@@ -1217,23 +1286,40 @@ local function handleWindowKey(win, char, code, ctrl, alt)
     elseif char == 22 then
       if s.clipboard then
         local target = pathJoin(s.path, baseName(s.clipboard))
-        if not filesystem.exists(target) and not filesystem.isDirectory(s.clipboard) then
-          local copied = copyFile(s.clipboard, target)
-          if copied and s.clipMode == "Cut" then pcall(filesystem.remove, s.clipboard); s.clipboard = nil; s.clipMode = nil end
+        if not filesystem.exists(target) then
+          local copied = copyPath(s.clipboard, target)
+          if copied and s.clipMode == "Cut" then
+            local removed = deletePath(s.clipboard)
+            if removed then s.clipboard = nil; s.clipMode = nil end
+          end
         end
       end
     elseif code == 14 then
-      s.path = parentPath(s.path); s.selected = nil; s.scroll = 0
+      explorerNavigate(s, parentPath(s.path))
     elseif code == 200 then s.scroll = math.max(0, s.scroll - 1)
     elseif code == 208 then s.scroll = math.min(math.max(0, #(s.entries or {}) - (s.visible or 1)), s.scroll + 1)
     elseif code == 28 and s.selected then
       local target = pathJoin(s.path, s.selected)
-      if filesystem.isDirectory(target) then s.path = target; s.selected = nil; s.scroll = 0
+      if filesystem.isDirectory(target) then explorerNavigate(s, target)
       else
         openFileInEditor(target)
       end
     end
   end
+end
+
+explorerNavigate = function(state, path, addHistory)
+  path = normalizePath(path)
+  if not filesystem.exists(path) or not filesystem.isDirectory(path) then return false end
+  state.path, state.selected, state.scroll = path, nil, 0
+  if addHistory ~= false then
+    local history = state.history or {"/"}
+    local index = state.historyIndex or #history
+    for i = #history, index + 1, -1 do history[i] = nil end
+    if history[#history] ~= path then history[#history + 1] = path end
+    state.history, state.historyIndex = history, #history
+  end
+  return true
 end
 
 local function appTouch(win, tx, ty)
@@ -1254,12 +1340,30 @@ local function appTouch(win, tx, ty)
   elseif win.app == "terminal" then
     if hit(tx, ty, x + 1, y + h - 2, w - 2, 1) then focused = win.id end
   elseif win.app == "files" then
+    for i = 1, #(s.sidebarRows or {}) do
+      local item = s.sidebarRows[i]
+      if item.enabled and hit(tx, ty, item.x, item.y, item.w, 1) then
+        if explorerNavigate(s, item.path) then return end
+      end
+    end
+    if s.nav then
+      if hit(tx, ty, s.nav.back.x, s.nav.back.y, 1, 1) then
+        if (s.historyIndex or 1) > 1 then s.historyIndex = s.historyIndex - 1; explorerNavigate(s, s.history[s.historyIndex], false) end
+        return
+      elseif hit(tx, ty, s.nav.forward.x, s.nav.forward.y, 1, 1) then
+        if (s.historyIndex or 1) < #(s.history or {}) then s.historyIndex = s.historyIndex + 1; explorerNavigate(s, s.history[s.historyIndex], false) end
+        return
+      elseif hit(tx, ty, s.nav.up.x, s.nav.up.y, 1, 1) then
+        explorerNavigate(s, parentPath(s.path)); return
+      end
+    end
     for i = 1, #(s.buttons or {}) do
       local b = s.buttons[i]
       if hit(tx, ty, b.x, b.y, b.w, 1) then
         local action = b.label
-        if action == "Up" then s.path = parentPath(s.path); s.selected = nil; s.scroll = 0
-        elseif action == "NewFolder" then
+        if action == "Up" then explorerNavigate(s, parentPath(s.path))
+        elseif action == "Grid View" or action == "List View" then s.gridMode = not s.gridMode
+        elseif action == "New Folder" then
           local entered = inputDialog("NEW FOLDER", "Folder name:", "New Folder")
           local name = safeName(entered)
           if entered ~= nil then
@@ -1277,7 +1381,7 @@ local function appTouch(win, tx, ty)
               end
             end
           end
-        elseif action == "NewFile" then
+        elseif action == "New File" then
           local entered = inputDialog("NEW FILE", "File name:", "New File.txt")
           local name = safeName(entered)
           if entered ~= nil then
@@ -1296,7 +1400,7 @@ local function appTouch(win, tx, ty)
           end
         elseif action == "Open" and s.selected then
           local target = pathJoin(s.path, s.selected)
-          if filesystem.isDirectory(target) then s.path = target; s.selected = nil; s.scroll = 0
+          if filesystem.isDirectory(target) then explorerNavigate(s, target)
           else
             openFileInEditor(target)
           end
@@ -1315,11 +1419,11 @@ local function appTouch(win, tx, ty)
         elseif action == "Paste" and s.clipboard then
           local target = pathJoin(s.path, baseName(s.clipboard))
           if filesystem.exists(target) then messageDialog("ERROR", "Destination already exists.")
-          elseif filesystem.isDirectory(s.clipboard) then messageDialog("ERROR", "Folder copy is not supported.")
           else
-            local ok, err = copyFile(s.clipboard, target)
+            local ok, err = copyPath(s.clipboard, target)
             if ok and s.clipMode == "Cut" then
-              pcall(filesystem.remove, s.clipboard); s.clipboard = nil; s.clipMode = nil
+              local removed, removeErr = deletePath(s.clipboard)
+              if removed then s.clipboard = nil; s.clipMode = nil else messageDialog("MOVE ERROR", tostring(removeErr)) end
             elseif not ok then messageDialog("ERROR", tostring(err)) end
           end
         elseif action == "Delete" and s.selected then
@@ -1331,13 +1435,26 @@ local function appTouch(win, tx, ty)
         return
       end
     end
-    if s.listY and ty >= s.listY and ty < s.listY + (s.visible or 0) then
+    if s.gridMode then
+      for i = 1, #(s.gridCells or {}) do
+        local cell = s.gridCells[i]
+        if hit(tx, ty, cell.x, cell.y, cell.w, cell.h) then
+          local entry = cell.name
+          if s.selected == entry then
+            local target = pathJoin(s.path, entry)
+            if filesystem.isDirectory(target) then explorerNavigate(s, target) else openFileInEditor(target) end
+          else s.selected = entry end
+          return
+        end
+      end
+    end
+    if not s.gridMode and s.listY and ty >= s.listY and ty < s.listY + (s.visible or 0) then
       local index = ty - s.listY + 1 + s.scroll
       local entry = s.entries[index]
       if entry then
         if s.selected == entry then
           local target = pathJoin(s.path, entry)
-          if filesystem.isDirectory(target) then s.path = target; s.selected = nil; s.scroll = 0
+          if filesystem.isDirectory(target) then explorerNavigate(s, target)
           else
             openFileInEditor(target)
           end
