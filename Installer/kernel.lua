@@ -1,5 +1,5 @@
 -- =========================================================
--- CHANGE 6
+-- CHANGE 6.5
 -- MEADOWS OS 2.4 - FOREST EDITION
 -- Native OpenComputers BIOS kernel
 -- =========================================================
@@ -219,15 +219,29 @@ local function fsRead(fs, path)
 end
 
 local function fsWrite(fs, path, data)
+  path = tostring(path or "")
   data = tostring(data or "")
-  local ok, handle = pcall(fs.open, path, "w")
-  if not ok or not handle then return false, "Could not open file for writing." end
-  local writeOK, result = pcall(fs.write, handle, data)
-  local closeOK, closeResult = pcall(fs.close, handle)
-  if not writeOK or result == false or not closeOK or closeResult == false then
-    return false, "Could not write file."
+  local ok, handle, openReason = pcall(fs.open, path, "w")
+  if not ok or not handle then
+    return false, "Could not open '" .. path .. "' for writing: " .. tostring(openReason or handle or "unknown storage error")
   end
-  if fsRead(fs, path) ~= data then return false, "Storage verification failed." end
+  local writeOK, writeReason = true, nil
+  local offset = 1
+  while offset <= #data do
+    local chunk = data:sub(offset, offset + 4095)
+    local callOK, result, reason = pcall(fs.write, handle, chunk)
+    if not callOK or result == false then
+      writeOK, writeReason = false, reason or result or "write failed"
+      break
+    end
+    offset = offset + #chunk
+  end
+  local closeOK, closeResult, closeReason = pcall(fs.close, handle)
+  if not writeOK or not closeOK or closeResult == false then
+    return false, "Could not write '" .. path .. "': " .. tostring(writeReason or closeReason or "storage error")
+  end
+  local saved = fsRead(fs, path)
+  if saved ~= data then return false, "Storage verification failed for '" .. path .. "'." end
   return true
 end
 
@@ -640,14 +654,21 @@ end
 
 local function listDirectory(path)
   path = normalizePath(path)
-  local ok, iterator = pcall(filesystem.list, path)
-  if not ok or not iterator then return {} end
+  local ok, iterator, listReason = pcall(filesystem.list, path)
+  if not ok or type(iterator) ~= "function" then
+    return {}, tostring(listReason or iterator or "Directory listing is not available.")
+  end
   local result = {}
   while true do
     local readOK, entry = pcall(iterator)
-    if not readOK or not entry then break end
-    entry = tostring(entry):gsub("/$", "")
-    if entry ~= "" then result[#result + 1] = entry end
+    if not readOK then return {}, "Directory read failed: " .. tostring(entry) end
+    if not entry then break end
+    entry = tostring(entry):gsub("\\", "/"):gsub("/$", "")
+    -- Some filesystem implementations return a full path; Explorer stores names only.
+    entry = entry:gsub("^/+", "")
+    local prefix = path == "/" and "" or (path:gsub("/$", "") .. "/")
+    if prefix ~= "" and entry:sub(1, #prefix) == prefix then entry = entry:sub(#prefix + 1) end
+    if entry ~= "" and not entry:find("/", 1, true) then result[#result + 1] = entry end
   end
   table.sort(result, function(a, b)
     local da = false; local db = false
@@ -1010,7 +1031,7 @@ local function drawWindow(win, active)
     local listY = by + 2
     s.listY = listY
     put(mainX, listY - 1, "NAME", C.accent, C.window)
-    local entries = listDirectory(s.path)
+    local entries, listError = listDirectory(s.path)
     s.entries = entries
     local visible = math.max(1, y + h - 3 - listY)
     s.visible = visible
@@ -1049,6 +1070,10 @@ local function drawWindow(win, active)
           put(mainX, row, (folder and "▸  " or "   ") .. entry, C.white, selected and C.select or C.window)
         end
       end
+    end
+    if #entries == 0 then
+      put(mainX, listY, listError and "Cannot read this folder:" or "This folder is empty.", listError and C.close or C.muted, C.window)
+      if listError then put(mainX, listY + 1, tostring(listError), C.text, C.window) end
     end
     put(mainX, y + h - 2, s.selected and ("Selected: " .. s.selected) or (tostring(#entries) .. " items"), C.muted, C.window)
   elseif win.app == "settings" then
@@ -1372,30 +1397,42 @@ local function appTouch(win, tx, ty)
               local target = pathJoin(s.path, name)
               if filesystem.exists(target) then messageDialog("ERROR", "That item already exists.")
               else
-                local ok, result = pcall(filesystem.makeDirectory, target)
+                local ok, result, reason = pcall(filesystem.makeDirectory, target)
                 local exists, isDir = false, false
                 pcall(function() exists = filesystem.exists(target); isDir = exists and filesystem.isDirectory(target) end)
                 if not ok or result == false or not exists or not isDir then
-                  messageDialog("ERROR", "Could not create folder: " .. tostring(result))
-                else s.selected = name end
+                  messageDialog("FOLDER ERROR", "Could not create: " .. tostring(reason or result or "storage rejected the request"))
+                else
+                  s.selected = name
+                  s.scroll = 0
+                end
               end
             end
           end
         elseif action == "New File" then
-          local entered = inputDialog("NEW FILE", "File name:", "New File.txt")
-          local name = safeName(entered)
+          local entered = inputDialog("NEW FILE", "File name (press Enter to confirm):", "New File.txt")
           if entered ~= nil then
-            if not name then messageDialog("ERROR", "Enter a valid file name.") else
-            local target = pathJoin(s.path, name)
-            if filesystem.exists(target) then messageDialog("ERROR", "That item already exists.")
+            local name = safeName(entered)
+            if not name then
+              messageDialog("FILE NAME", "Enter a valid file name.")
             else
-              local ok, err = writeFile(target, "")
-              if not ok then messageDialog("ERROR", tostring(err or "Could not create file."))
+              local target = normalizePath(pathJoin(s.path, name))
+              local existsOK, exists = pcall(filesystem.exists, target)
+              if not existsOK then
+                messageDialog("STORAGE ERROR", "Could not check the destination: " .. tostring(exists))
+              elseif exists then
+                messageDialog("FILE EXISTS", "That item already exists.")
               else
-                s.selected = name
-                openFileInEditor(target)
+                local created, createError = writeFile(target, "")
+                if not created then
+                  messageDialog("FILE ERROR", tostring(createError or "Could not create file."))
+                elseif not filesystem.exists(target) then
+                  messageDialog("FILE ERROR", "Storage did not create the file.")
+                else
+                  s.selected = name
+                  openFileInEditor(target)
+                end
               end
-            end
             end
           end
         elseif action == "Open" and s.selected then
