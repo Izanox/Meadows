@@ -1,5 +1,5 @@
 -- =========================================================
--- CHANGE 6.5
+-- CHANGE 6.6
 -- MEADOWS OS 2.4 - FOREST EDITION
 -- Native OpenComputers BIOS kernel
 -- =========================================================
@@ -37,7 +37,7 @@ if W < 50 or H < 20 then
 end
 pcall(gpu.setDepth, 8)
 
-local VERSION = "2.4"
+local VERSION = "2.6"
 local OS_NAME = "Meadows"
 local MAX_WINDOWS = 4
 local C = {
@@ -654,24 +654,60 @@ end
 
 local function listDirectory(path)
   path = normalizePath(path)
-  local ok, iterator, listReason = pcall(filesystem.list, path)
-  if not ok or type(iterator) ~= "function" then
-    return {}, tostring(listReason or iterator or "Directory listing is not available.")
+
+  -- OpenComputers normally returns an iterator from filesystem.list().
+  -- Some filesystem wrappers return a table instead. Support both forms.
+  local callOK, listing, listReason = pcall(filesystem.list, path)
+  if not callOK then
+    return {}, "Directory listing failed: " .. tostring(listing)
   end
-  local result = {}
-  while true do
-    local readOK, entry = pcall(iterator)
-    if not readOK then return {}, "Directory read failed: " .. tostring(entry) end
-    if not entry then break end
-    entry = tostring(entry):gsub("\\", "/"):gsub("/$", "")
-    -- Some filesystem implementations return a full path; Explorer stores names only.
+  if listing == nil then
+    return {}, "Directory listing failed: " .. tostring(listReason or "no result returned")
+  end
+
+  local rawEntries = {}
+  local function addEntry(value)
+    if type(value) == "string" and value ~= "" then
+      rawEntries[#rawEntries + 1] = value
+    end
+  end
+
+  if type(listing) == "function" then
+    while true do
+      local readOK, entry = pcall(listing)
+      if not readOK then
+        return {}, "Directory read failed: " .. tostring(entry)
+      end
+      if entry == nil then break end
+      addEntry(entry)
+    end
+  elseif type(listing) == "table" then
+    -- Array-style results are the common table form. Also accept maps
+    -- such as { ["folder/"] = true } without adding non-string metadata.
+    for _, entry in ipairs(listing) do addEntry(entry) end
+    for key, value in pairs(listing) do
+      if type(key) == "string" and value == true then addEntry(key) end
+    end
+  else
+    return {}, "Unsupported directory listing result: " .. type(listing)
+  end
+
+  local result, seen = {}, {}
+  for i = 1, #rawEntries do
+    local entry = tostring(rawEntries[i]):gsub("\\", "/"):gsub("/+$", "")
     entry = entry:gsub("^/+", "")
     local prefix = path == "/" and "" or (path:gsub("/$", "") .. "/")
-    if prefix ~= "" and entry:sub(1, #prefix) == prefix then entry = entry:sub(#prefix + 1) end
-    if entry ~= "" and not entry:find("/", 1, true) then result[#result + 1] = entry end
+    if prefix ~= "" and entry:sub(1, #prefix) == prefix then
+      entry = entry:sub(#prefix + 1)
+    end
+    if entry ~= "" and not entry:find("/", 1, true) and not seen[entry] then
+      result[#result + 1] = entry
+      seen[entry] = true
+    end
   end
+
   table.sort(result, function(a, b)
-    local da = false; local db = false
+    local da, db = false, false
     pcall(function() da = filesystem.isDirectory(pathJoin(path, a)) end)
     pcall(function() db = filesystem.isDirectory(pathJoin(path, b)) end)
     if da ~= db then return da end
