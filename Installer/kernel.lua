@@ -1,4 +1,5 @@
 -- =========================================================
+-- CHANGE 1.0
 -- MEADOWS OS 3.0 - FOREST EDITION
 -- Native OpenComputers BIOS kernel
 -- =========================================================
@@ -45,7 +46,12 @@ local C = {
   title = 0x294B38, accent = 0x72D69A, accent2 = 0x285C3D,
   text = 0xE8F5EC, muted = 0x9BB5A3, border = 0x42634C,
   close = 0xD94F55, white = 0xFFFFFF, black = 0x000000,
-  select = 0x285C3D, input = 0x0C1911
+  select = 0x285C3D, input = 0x0C1911,
+
+  editorBg = 0x101C15,
+  editorMuted = 0x8FA99A,
+  editorText = 0xDCEBE0,
+  fileText = 0xDCEBE0
 }
 
 local DATA_DIR = "/.meadows"
@@ -1659,6 +1665,7 @@ local function appTouch(win, tx, ty)
                   messageDialog("FILE ERROR", "Storage did not create the file.")
                 else
                   s.selected = name
+                  s.scroll = 0
                   openFileInEditor(target)
                 end
               end
@@ -1863,8 +1870,9 @@ end
 
 -- ------------------------- Main desktop loop -------------------------
 local function desktopLoop()
+  drawAll()
+
   while true do
-    drawAll()
     local sig, addr, ch, code, player = computer.pullSignal(0.15)
     if sig == "touch" then
       local tx, ty = tonumber(ch), tonumber(code)
@@ -1949,15 +1957,19 @@ local function desktopLoop()
     elseif sig == "key_down" then
       local ctrl = false
       local alt = false
-      if computer.getKeyboards then
-        -- Modifier state is not consistently exposed by all OpenComputers versions.
-        ctrl = false; alt = false
-      end
-      if code == 1 and startOpen then startOpen = false
+
+      if code == 1 and startOpen then
+        startOpen = false
       elseif focused then
         local _, win = findWindow(focused)
-        if win then handleWindowKey(win, ch, code, ctrl, alt) end
+        if win then
+          handleWindowKey(win, ch, code, ctrl, alt)
+        end
       end
+    end
+
+    if sig then
+      drawAll()
     end
   end
 end
