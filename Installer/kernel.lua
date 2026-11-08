@@ -1,6 +1,6 @@
 -- =========================================================
--- CHANGE 5.0
--- MEADOWS OS 2.0 - FOREST EDITION
+-- CHANGE 5.5
+-- MEADOWS OS 2.1 - FOREST EDITION
 -- Native OpenComputers BIOS kernel
 -- =========================================================
 -- Install as the kernel loaded by your EEPROM.
@@ -37,7 +37,7 @@ if W < 50 or H < 20 then
 end
 pcall(gpu.setDepth, 8)
 
-local VERSION = "2.0"
+local VERSION = "2.1"
 local OS_NAME = "Meadows"
 local MAX_WINDOWS = 2
 local C = {
@@ -101,9 +101,17 @@ local function button(x, y, w, label, active, color)
   put(tx, y, s:sub(1, w), C.white, surface)
 end
 
+local config
+
+local function virtualTimestamp()
+  local now = os and os.time and os.time() or 0
+  return now + (tonumber(config and config.clockShift) or 0) +
+    (tonumber(config and config.utcOffset) or 0) * 60
+end
+
 local function clockText()
   if os and os.date then
-    local ok, value = pcall(os.date, "%H:%M")
+    local ok, value = pcall(os.date, "!%H:%M:%S", virtualTimestamp())
     if ok and value then return tostring(value) end
   end
   local t = math.floor(computer.uptime())
@@ -112,10 +120,17 @@ end
 
 local function dateText()
   if os and os.date then
-    local ok, value = pcall(os.date, "%d/%m/%Y")
+    local ok, value = pcall(os.date, "!%Y-%m-%d", virtualTimestamp())
     if ok and value then return tostring(value) end
   end
   return "OpenComputers"
+end
+
+local function utcLabel()
+  local offset = tonumber(config and config.utcOffset) or 0
+  local sign = offset < 0 and "-" or "+"
+  offset = math.abs(offset)
+  return "UTC" .. sign .. string.format("%02d:%02d", math.floor(offset / 60), offset % 60)
 end
 
 local function clear(color)
@@ -242,7 +257,7 @@ local function chooseStorage()
   local choice, scroll = 1, 0
   while true do
     clear(C.bg)
-    center(2, "MEADOWS 2.0 INSTALLATION", C.accent)
+    center(2, "MEADOWS 2.1 INSTALLATION", C.accent)
     center(4, "Choose the writable drive for system data.", C.white)
     local visible = math.max(1, H - 10)
     if choice > scroll + visible then scroll = choice - visible end
@@ -306,9 +321,10 @@ local function readFile(path) return fsRead(filesystem, path) end
 local function writeFile(path, data) return fsWrite(filesystem, path, data) end
 
 -- ------------------------- Configuration and accounts -------------------------
-local config = {
+config = {
   computerName = "Meadows-PC", wallpaper = 1, username = "",
-  displayName = "", setupComplete = false, version = VERSION
+  displayName = "", setupComplete = false, version = VERSION,
+  clockShift = 0, utcOffset = 0
 }
 
 local function cleanValue(value)
@@ -324,7 +340,9 @@ local function saveConfig()
     "username=" .. cleanValue(config.username),
     "displayName=" .. cleanValue(config.displayName),
     "setupComplete=" .. tostring(config.setupComplete),
-    "version=" .. cleanValue(config.version)
+    "version=" .. cleanValue(config.version),
+    "clockShift=" .. tostring(tonumber(config.clockShift) or 0),
+    "utcOffset=" .. tostring(tonumber(config.utcOffset) or 0)
   }
   return writeFile(CONFIG_FILE, table.concat(lines, "\n"))
 end
@@ -340,7 +358,9 @@ local function loadConfig()
       elseif key == "username" then config.username = value
       elseif key == "displayName" then config.displayName = value
       elseif key == "setupComplete" then config.setupComplete = value == "true"
-      elseif key == "version" then config.version = value end
+      elseif key == "version" then config.version = value
+      elseif key == "clockShift" then config.clockShift = tonumber(value) or 0
+      elseif key == "utcOffset" then config.utcOffset = clamp(tonumber(value) or 0, -720, 840) end
     end
   end
 end
@@ -498,7 +518,7 @@ local function setupWizard()
   config.setupComplete = true
   config.version = VERSION
   if not saveConfig() or not saveAccounts() then error("Meadows: Could not save setup.") end
-  messageDialog("SETUP COMPLETE", "Welcome to Meadows 2.0!")
+  messageDialog("SETUP COMPLETE", "Welcome to Meadows 2.1!")
 end
 
 if not config.setupComplete or #accounts == 0 then setupWizard() end
@@ -506,7 +526,7 @@ if not config.setupComplete or #accounts == 0 then setupWizard() end
 local function loginScreen()
   while true do
     clear(C.bg)
-    center(3, "MEADOWS 2.0", C.accent)
+    center(3, "MEADOWS 2.1", C.accent)
     center(5, "Welcome back to " .. tostring(config.computerName), C.white)
     for i = 1, #accounts do
       button(math.floor(W / 2) - 17, 8 + (i - 1) * 2, 34,
@@ -684,7 +704,7 @@ local function drawDesktop()
     button(x, H - 2, #name + 2, name, running); x = x + #name + 3
   end
   put(W - 8, H - 2, clockText(), C.white, C.panel)
-  put(W - 11, H - 1, dateText():sub(1, 10), C.muted, C.panel)
+  put(W - 11, H - 1, dateText():sub(6, 10), C.muted, C.panel)
 end
 
 -- ------------------------- Window manager -------------------------
@@ -733,6 +753,8 @@ local function openWindow(app)
   if win.h < 12 then win.h = H - 5 end
   if app == "files" then win.title = "File Explorer"; win.state.path = "/"; win.state.selected = nil; win.state.scroll = 0; win.state.clipboard = nil; win.state.clipMode = nil
   elseif app == "notes" then win.title = "Meadows Notes"; win.state.text = loadNotes(); win.state.cursor = textLen(loadNotes()) + 1; win.state.scroll = 0; win.state.dirty = false
+  elseif app == "editor" then win.title = "Text Editor"; win.state.path = "/"; win.state.text = ""; win.state.cursor = 1; win.state.scroll = 0; win.state.dirty = false
+  elseif app == "picture" then win.title = "Picture Viewer"; win.state.path = ""; win.state.picture = nil
   elseif app == "terminal" then win.title = "Meadows Terminal"; win.state.path = "/"; win.state.history = {"Meadows Terminal " .. VERSION}; win.state.command = ""; win.state.cursor = 1; win.state.scroll = 0
   elseif app == "settings" then win.title = "Settings"
   elseif app == "monitor" then win.title = "System Monitor"
@@ -747,6 +769,69 @@ end
 local function windowRect(win)
   if win.maximized then return 2, 2, W - 4, H - 5 end
   return win.x, win.y, win.w, win.h
+end
+
+local function centerInWindow(x, y, w, value, fg, bg)
+  value = tostring(value or "")
+  local tx = x + math.max(1, math.floor((w - textLen(value)) / 2))
+  put(tx, y, value, fg, bg)
+end
+
+local function splitLines(value)
+  local lines = {}
+  for line in (tostring(value or "") .. "\n"):gmatch("(.-)\n") do
+    lines[#lines + 1] = line
+  end
+  if #lines == 0 then lines[1] = "" end
+  return lines
+end
+
+local function editorCursorPosition(value, cursor)
+  local before = textSub(value, 1, math.max(0, (cursor or 1) - 1))
+  local line = 1
+  for _ in before:gmatch("\n") do line = line + 1 end
+  local last = before:match("([^\n]*)$") or ""
+  return line, textLen(last)
+end
+
+local function saveDocument(win)
+  local ok, err = writeFile(win.state.path, win.state.text)
+  if ok then win.state.dirty = false
+  else messageDialog("SAVE ERROR", tostring(err or "Could not save file.")) end
+  return ok
+end
+
+local function openFileInEditor(path)
+  path = normalizePath(path)
+  local ext = (baseName(path):match("%.([^%.]+)$") or ""):lower()
+  if ext == "pic" then
+    if openWindow("picture") then
+      local _, picWin = findWindow(focused)
+      if picWin then
+        picWin.state.path = path
+        local ok, imageLib = pcall(require, "image")
+        if ok and imageLib and imageLib.load then
+          local loaded, result, reason = pcall(imageLib.load, path)
+          if loaded and result then picWin.state.picture = result
+          else picWin.state.error = tostring(reason or result or "Image load failed.") end
+        else
+          picWin.state.error = "MineOS image library is missing (install /lib/image.lua)."
+        end
+      end
+    end
+  else
+    if openWindow("editor") then
+      local _, editWin = findWindow(focused)
+      if editWin then
+        editWin.title = "Text Editor - " .. baseName(path)
+        editWin.state.path = path
+        editWin.state.text = readFile(path) or ""
+        editWin.state.cursor = textLen(editWin.state.text) + 1
+        editWin.state.scroll = 0
+        editWin.state.dirty = false
+      end
+    end
+  end
 end
 
 local function drawWindow(win, active)
@@ -764,21 +849,48 @@ local function drawWindow(win, active)
   button(maxX, y, 3, win.maximized and "[]" or "[]", false, C.panel2)
   button(closeX, y, 3, "X", false, C.close)
   rect(x, y + h - 1, w, 1, C.border)
-  if win.app == "notes" then
+  if win.app == "editor" or win.app == "notes" then
     local s = win.state
-    put(x + 2, y + 2, "NOTES  |  Ctrl+S to save", C.accent, C.window)
-    local lines = {}
-    for line in (s.text .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = line end
-    local bodyH = h - 6
-    local start = math.max(1, s.scroll + 1)
+    put(x + 2, y + 2, win.app == "notes" and "NOTES  |  Ctrl+S to save" or ("EDITING: " .. tostring(s.path or "")), C.accent, C.window)
+    put(x + 2, y + 3, win.app == "notes" and "Arrows move | Enter new line | Ctrl+S saves" or "Ctrl+S saves | Arrows move | Enter new line", C.muted, C.window)
+    local lines = splitLines(s.text)
+    local bodyH = math.max(1, h - 7)
+    local currentLine, currentCol = editorCursorPosition(s.text, s.cursor)
+    if currentLine <= s.scroll then s.scroll = currentLine - 1 end
+    if currentLine > s.scroll + bodyH then s.scroll = currentLine - bodyH end
     for i = 1, bodyH do
-      local line = lines[start + i - 1]
-      if line then put(x + 2, y + 3 + i - 1, line:sub(1, w - 5), C.text, C.window) end
+      local line = lines[s.scroll + i]
+      if line then put(x + 2, y + 4 + i - 1, textSub(line, 1, w - 5), C.text, C.window) end
     end
-    put(x + 2, y + h - 2, s.dirty and "* Unsaved changes" or "Saved", s.dirty and C.accent or C.muted, C.window)
-    if active and math.floor(computer.uptime() * 2) % 2 == 0 then
-      local cursorX = math.min(x + w - 3, x + 2 + textLen(s.text))
-      put(cursorX, y + h - 2, "|", C.accent, C.window)
+    put(x + 2, y + h - 2, s.dirty and "* Unsaved changes" or (win.app == "notes" and "Saved" or "Saved to disk"), s.dirty and C.accent or C.muted, C.window)
+    if active and currentLine > s.scroll and currentLine <= s.scroll + bodyH and math.floor(computer.uptime() * 2) % 2 == 0 then
+      local cx = math.min(x + w - 3, x + 2 + currentCol)
+      put(cx, y + 4 + currentLine - s.scroll - 1, "|", C.accent, C.window)
+    end
+  elseif win.app == "picture" then
+    local s = win.state
+    put(x + 2, y + 2, "PICTURE VIEWER: " .. tostring(s.path or ""), C.accent, C.window)
+    if s.error then
+      put(x + 2, y + 4, s.error, C.text, C.window)
+      put(x + 2, y + 6, "Install the MineOS image library to view .pic files.", C.muted, C.window)
+    elseif s.picture then
+      local pic = s.picture
+      local iw, ih = tonumber(pic[1]) or 0, tonumber(pic[2]) or 0
+      local maxW, maxH = w - 4, h - 5
+      local scale = math.max(1, math.ceil(math.max(iw / maxW, ih / maxH)))
+      local drawW, drawH = math.min(maxW, math.floor(iw / scale)), math.min(maxH, math.floor(ih / scale))
+      local ox, oy = x + 2 + math.floor((maxW - drawW) / 2), y + 4
+      for py = 1, drawH do
+        for px = 1, drawW do
+          local sx, sy = (px - 1) * scale + 1, (py - 1) * scale + 1
+          local idx = 3 + ((sy - 1) * iw + (sx - 1)) * 4
+          local bg, fg, alpha, symbol = pic[idx], pic[idx + 1], pic[idx + 2], pic[idx + 3]
+          if bg and fg and symbol and (tonumber(alpha) or 0) < 255 then
+            gpu.setBackground(bg); gpu.setForeground(fg)
+            gpu.set(ox + px - 1, oy + py - 1, tostring(symbol))
+          end
+        end
+      end
     end
   elseif win.app == "terminal" then
     local s = win.state
@@ -850,32 +962,37 @@ local function drawWindow(win, active)
     put(x + 2, y + 14, "Disk used: " .. tostring(used) .. " / " .. tostring(total), C.text, C.window)
     put(x + 2, y + 16, "Refresh by clicking inside this window.", C.muted, C.window)
   elseif win.app == "clock" then
-    center(y + 5, clockText(), C.accent, C.window)
-    center(y + 8, dateText(), C.text, C.window)
-    center(y + 11, "System clock provided by OpenComputers.", C.muted, C.window)
+    centerInWindow(x, y + 3, w, clockText(), C.accent, C.window)
+    centerInWindow(x, y + 5, w, dateText() .. "  " .. utcLabel(), C.text, C.window)
+    put(x + 2, y + 8, "Change date: set the Meadows display calendar", C.muted, C.window)
+    button(x + 2, y + 10, 18, "Set Date", false)
+    button(x + 22, y + 10, 18, "Set Time", false)
+    button(x + 2, y + 12, w - 4, "Set UTC Offset / World Time", false)
+    put(x + 2, y + 13, "Virtual clock; hardware time unchanged.", C.muted, C.window)
   elseif win.app == "about" then
-    center(y + 4, "MEADOWS OS 2.0", C.accent, C.window)
-    center(y + 6, "Forest Edition", C.white, C.window)
-    center(y + 8, "A desktop environment for OpenComputers.", C.text, C.window)
-    center(y + 10, "Persistent storage | Window manager | Apps", C.muted, C.window)
-    center(y + 12, "Thank you for using Meadows!", C.accent, C.window)
+    centerInWindow(x, y + 4, w, "MEADOWS OS 2.1", C.accent, C.window)
+    centerInWindow(x, y + 6, w, "Forest Edition", C.white, C.window)
+    centerInWindow(x, y + 8, w, "A desktop for OpenComputers.", C.text, C.window)
+    centerInWindow(x, y + 10, w, "Storage | Windows | Apps", C.muted, C.window)
+    centerInWindow(x, y + 12, w, "Thank you for using Meadows!", C.accent, C.window)
   end
 end
 
 local function drawStartMenu()
-  local mw, mh = math.min(36, W - 6), math.min(17, H - 6)
-  local x, y = math.floor((W - mw) / 2), H - mh - 3
+  local mw, mh = math.min(38, W - 4), math.min(14, H - 4)
+  local x, y = math.max(1, math.floor((W - mw) / 2)), math.max(1, H - mh - 2)
   rect(x, y, mw, mh, C.window)
   rect(x, y, mw, 1, C.title)
-  put(x + 2, y, "MEADOWS 2.0", C.white, C.title)
+  put(x + 2, y, "MEADOWS 2.1", C.white, C.title)
   local entries = {
     {"File Explorer", "files"}, {"Notes", "notes"}, {"Terminal", "terminal"},
     {"Settings", "settings"}, {"System Monitor", "monitor"},
-    {"Calendar & Clock", "clock"}, {"About Meadows", "about"}, {"Power Off", "power"}
+    {"Calendar & Clock", "clock"}, {"About Meadows", "about"},
+    {"Log Out", "logout"}, {"Restart", "restart"}, {"Shut Down", "shutdown"}
   }
   for i = 1, #entries do
-    local row = y + 2 + (i - 1) * 2
-    if row < y + mh - 1 then button(x + 2, row, mw - 4, entries[i][1], false) end
+    local row = y + 2 + (i - 1)
+    if row < y + mh then button(x + 1, row, mw - 2, entries[i][1], false) end
   end
   return x, y, mw, mh, entries
 end
@@ -916,7 +1033,7 @@ local function terminalCommand(win, command)
       if filesystem.exists(target) then out("Already exists.")
       elseif cmd == "mkdir" then
         local ok, result = pcall(filesystem.makeDirectory, target)
-        out(ok and result ~= false and "Directory created." or "Could not create directory.")
+        out(ok and result ~= false and filesystem.exists(target) and filesystem.isDirectory(target) and "Directory created." or "Could not create directory.")
       else
         local ok = writeFile(target, "")
         out(ok and "File created." or "Could not create file.")
@@ -962,6 +1079,62 @@ local function insertText(s, ch, field)
   s.cursor = cursor + textLen(ch)
 end
 
+local function moveEditorCursor(s, direction)
+  local value, cursor = s.text or "", s.cursor or 1
+  local line, col = editorCursorPosition(value, cursor)
+  local lines = splitLines(value)
+  if direction == "left" then cursor = math.max(1, cursor - 1)
+  elseif direction == "right" then cursor = math.min(textLen(value) + 1, cursor + 1)
+  elseif direction == "home" then cursor = cursor - col
+  elseif direction == "end" then cursor = cursor + (textLen(lines[line] or "") - col)
+  elseif direction == "up" or direction == "down" then
+    local targetLine = clamp(line + (direction == "up" and -1 or 1), 1, #lines)
+    local targetCol = math.min(col, textLen(lines[targetLine] or ""))
+    local n = 1
+    for i = 1, targetLine - 1 do n = n + textLen(lines[i]) + 1 end
+    cursor = n + targetCol
+  end
+  s.cursor = cursor
+end
+
+local function editTextKey(win, char, code, ctrl)
+  local s = win.state
+  if char == 19 or (ctrl and code == 31) then
+    if win.app == "notes" then
+      if saveNotes(s.text) then s.dirty = false end
+    else saveDocument(win) end
+    return
+  end
+  if code == 203 then moveEditorCursor(s, "left")
+  elseif code == 205 then moveEditorCursor(s, "right")
+  elseif code == 200 then moveEditorCursor(s, "up")
+  elseif code == 208 then moveEditorCursor(s, "down")
+  elseif code == 199 then moveEditorCursor(s, "home")
+  elseif code == 207 then moveEditorCursor(s, "end")
+  elseif code == 14 then
+    if s.cursor > 1 then
+      local left = textSub(s.text, 1, s.cursor - 2)
+      local right = textSub(s.text, s.cursor, -1)
+      s.text = left .. right; s.cursor = s.cursor - 1
+    end
+  elseif code == 211 then
+    local left = textSub(s.text, 1, s.cursor - 1)
+    local right = textSub(s.text, s.cursor + 1, -1)
+    s.text = left .. right
+  elseif code == 28 then
+    insertText(s, "\n", "text")
+  else
+    local ch = charFromCode(char)
+    if ch ~= "" and textLen(s.text) < 24000 then insertText(s, ch, "text") end
+  end
+  s.dirty = true
+  if win.app == "notes" then
+    if saveNotes(s.text) then s.dirty = false end
+  elseif win.app == "editor" then
+    saveDocument(win)
+  end
+end
+
 local function handleWindowKey(win, char, code, ctrl, alt)
   local s = win.state
   if alt and code == 62 then closeWindow(win.id); return end -- Alt+F4
@@ -970,22 +1143,8 @@ local function handleWindowKey(win, char, code, ctrl, alt)
     closeWindow(win.id)
     return
   end
-  if win.app == "notes" then
-    if ctrl and (char == 19 or code == 31) then
-      if saveNotes(s.text) then s.dirty = false end
-    elseif code == 14 then
-      s.text = backspace(s.text); s.cursor = textLen(s.text) + 1; s.dirty = true
-      if saveNotes(s.text) then s.dirty = false end
-    elseif code == 28 then
-      s.text = s.text .. "\n"; s.cursor = textLen(s.text) + 1; s.dirty = true
-      if saveNotes(s.text) then s.dirty = false end
-    else
-      local ch = charFromCode(char)
-      if ch ~= "" and textLen(s.text) < 6000 then
-        s.text = s.text .. ch; s.cursor = textLen(s.text) + 1; s.dirty = true
-        if saveNotes(s.text) then s.dirty = false end
-      end
-    end
+  if win.app == "notes" or win.app == "editor" then
+    editTextKey(win, char, code, ctrl)
   elseif win.app == "terminal" then
     if code == 14 then
       s.command = backspace(s.command); s.cursor = textLen(s.command) + 1
@@ -1020,8 +1179,7 @@ local function handleWindowKey(win, char, code, ctrl, alt)
       local target = pathJoin(s.path, s.selected)
       if filesystem.isDirectory(target) then s.path = target; s.selected = nil; s.scroll = 0
       else
-        local content = readFile(target) or ""
-        messageDialog(baseName(target), content:sub(1, W * 5))
+        openFileInEditor(target)
       end
     end
   end
@@ -1030,10 +1188,17 @@ end
 local function appTouch(win, tx, ty)
   local x, y, w, h = windowRect(win)
   local s = win.state
-  if win.app == "notes" then
+  if win.app == "notes" or win.app == "editor" then
     if hit(tx, ty, x + 1, y + 2, w - 2, h - 4) then
-      -- Notes is keyboard-editable while focused; tapping the text area places focus.
       focused = win.id
+      if ty >= y + 4 and ty < y + h - 2 then
+        local lines = splitLines(s.text)
+        local targetLine = clamp(ty - (y + 4) + 1 + s.scroll, 1, #lines)
+        local targetCol = clamp(tx - (x + 2), 0, textLen(lines[targetLine] or ""))
+        local cursor = 1
+        for i = 1, targetLine - 1 do cursor = cursor + textLen(lines[i]) + 1 end
+        s.cursor = cursor + targetCol
+      end
     end
   elseif win.app == "terminal" then
     if hit(tx, ty, x + 1, y + h - 2, w - 2, 1) then focused = win.id end
@@ -1046,22 +1211,31 @@ local function appTouch(win, tx, ty)
         elseif action == "NewFolder" then
           local name = safeName(inputDialog("NEW FOLDER", "Folder name:", "New Folder"))
           if name then
-            local ok, result = pcall(filesystem.makeDirectory, pathJoin(s.path, name))
-            if not ok or result == false then messageDialog("ERROR", "Could not create folder.") end
+            local target = pathJoin(s.path, name)
+            local ok, result = pcall(filesystem.makeDirectory, target)
+            if not ok or result == false or not filesystem.exists(target) or not filesystem.isDirectory(target) then
+              messageDialog("ERROR", "Could not create folder: " .. tostring(result))
+            end
           end
         elseif action == "NewFile" then
           local name = safeName(inputDialog("NEW FILE", "File name:", "New File.txt"))
           if name then
             local target = pathJoin(s.path, name)
             if filesystem.exists(target) then messageDialog("ERROR", "That item already exists.")
-            else writeFile(target, "") end
+            else
+              local ok, err = writeFile(target, "")
+              if not ok then messageDialog("ERROR", tostring(err or "Could not create file."))
+              else
+                s.selected = name
+                openFileInEditor(target)
+              end
+            end
           end
         elseif action == "Open" and s.selected then
           local target = pathJoin(s.path, s.selected)
           if filesystem.isDirectory(target) then s.path = target; s.selected = nil; s.scroll = 0
           else
-            local data = readFile(target) or ""
-            messageDialog(baseName(target), data:sub(1, W * 5))
+            openFileInEditor(target)
           end
         elseif action == "Rename" and s.selected then
           local newName = safeName(inputDialog("RENAME", "New name:", s.selected))
@@ -1102,11 +1276,45 @@ local function appTouch(win, tx, ty)
           local target = pathJoin(s.path, entry)
           if filesystem.isDirectory(target) then s.path = target; s.selected = nil; s.scroll = 0
           else
-            local data = readFile(target) or ""
-            messageDialog(baseName(target), data:sub(1, W * 5))
+            openFileInEditor(target)
           end
         else s.selected = entry end
       end
+    end
+  elseif win.app == "clock" then
+    if hit(tx, ty, x + 2, y + 10, 18, 1) then
+      local dateValue = inputDialog("SET DATE", "Enter date YYYY-MM-DD:", dateText())
+      local yy, mm, dd
+      if dateValue then yy, mm, dd = dateValue:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)$") end
+      if yy then
+        local old = os.time()
+        local t = {year=tonumber(yy), month=tonumber(mm), day=tonumber(dd), hour=0, min=0, sec=0}
+        local ok, target = pcall(os.time, t)
+        if ok and target then
+          local utc = os.difftime(os.time(os.date("!*t", target)), target)
+          config.clockShift = target - utc - (tonumber(config.utcOffset) or 0) * 60 - old
+          saveConfig()
+        else messageDialog("DATE ERROR", "Invalid date.") end
+      else messageDialog("DATE ERROR", "Use YYYY-MM-DD.") end
+    elseif hit(tx, ty, x + 22, y + 10, 18, 1) then
+      local timeValue = inputDialog("SET TIME", "Enter time HH:MM:SS:", clockText())
+      local hh, mi, ss
+      if timeValue then hh, mi, ss = timeValue:match("^(%d%d):(%d%d):(%d%d)$") end
+      if hh and tonumber(hh) < 24 and tonumber(mi) < 60 and tonumber(ss) < 60 then
+        local current = os.date("!*t", virtualTimestamp())
+        local targetTable = {year=current.year, month=current.month, day=current.day, hour=tonumber(hh), min=tonumber(mi), sec=tonumber(ss)}
+        local target = os.time(targetTable)
+        local utc = os.difftime(os.time(os.date("!*t", target)), target)
+        config.clockShift = target - utc - (tonumber(config.utcOffset) or 0) * 60 - os.time()
+        saveConfig()
+      else messageDialog("TIME ERROR", "Use a valid HH:MM:SS time.") end
+    elseif hit(tx, ty, x + 2, y + 12, w - 4, 1) then
+      local zone = inputDialog("UTC OFFSET", "Enter offset minutes (e.g. 330 for UTC+5:30):", tostring(config.utcOffset or 0))
+      local n = tonumber(zone)
+      if n and n >= -720 and n <= 840 then
+        config.utcOffset = math.floor(n)
+        saveConfig()
+      else messageDialog("TIME ZONE", "Offset must be -720 to +840 minutes.") end
     end
   elseif win.app == "settings" then
     for i = 1, #wallpapers do
@@ -1161,8 +1369,10 @@ local function handleWindowTouch(tx, ty)
         local closeX, maxX, minX = x + w - 4, x + w - 8, x + w - 12
         if ty == y then
           if hit(tx, ty, closeX, y, 3, 1) then
-            if win.app == "notes" and win.state.dirty then
-              if confirmDialog("UNSAVED NOTES", "Save changes before closing?") then saveNotes(win.state.text) end
+            if (win.app == "notes" or win.app == "editor") and win.state.dirty then
+              if confirmDialog("UNSAVED CHANGES", "Save changes before closing?") then
+                if win.app == "notes" then saveNotes(win.state.text) else saveDocument(win) end
+              end
             end
             closeWindow(win.id); return true
           elseif hit(tx, ty, maxX, y, 3, 1) then
@@ -1227,12 +1437,30 @@ local function desktopLoop()
           local mx, my, mw, mh, entries = drawStartMenu()
           if hit(tx, ty, mx, my, mw, mh) then
             for i = 1, #entries do
-              local row = my + 2 + (i - 1) * 2
-              if hit(tx, ty, mx + 2, row, mw - 4, 1) then
+              local row = my + 2 + (i - 1)
+              if hit(tx, ty, mx + 1, row, mw - 2, 1) then
                 local app = entries[i][2]
                 startOpen = false
-                if app == "power" then
-                  if confirmDialog("POWER OFF", "Shut down Meadows OS?") then computer.shutdown() end
+                if app == "shutdown" then
+                  if confirmDialog("SHUT DOWN", "Turn off this computer?") then computer.shutdown() end
+                elseif app == "restart" then
+                  if confirmDialog("RESTART", "Restart this computer?") then computer.shutdown(true) end
+                elseif app == "logout" then
+                  if confirmDialog("LOG OUT", "Return to the sign-in screen?") then
+                    for wi = 1, #windows do
+                      local pending = windows[wi]
+                      if pending.state and pending.state.dirty then
+                        if pending.app == "notes" then saveNotes(pending.state.text)
+                        elseif pending.app == "editor" then saveDocument(pending) end
+                      end
+                    end
+                    windows = {}; focused = nil
+                    currentAccount = loginScreen()
+                    if not currentAccount then computer.shutdown() end
+                    config.username = currentAccount.username
+                    config.displayName = currentAccount.displayName
+                    saveConfig()
+                  end
                 else openWindow(app) end
                 break
               end
@@ -1290,7 +1518,7 @@ end
 
 -- ------------------------- Final boot -------------------------
 clear(C.bg)
-center(math.floor(H / 2) - 1, "MEADOWS OS 2.0", C.accent)
+center(math.floor(H / 2) - 1, "MEADOWS OS 2.1", C.accent)
 center(math.floor(H / 2) + 1, "Preparing Forest Desktop...", C.white)
 computer.pullSignal(0.45)
 desktopLoop()
