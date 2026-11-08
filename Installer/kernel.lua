@@ -1,6 +1,5 @@
 -- =========================================================
--- CHANGE 6.6
--- MEADOWS OS 2.4 - FOREST EDITION
+-- MEADOWS OS 3.0 - FOREST EDITION
 -- Native OpenComputers BIOS kernel
 -- =========================================================
 -- Install as the kernel loaded by your EEPROM.
@@ -24,20 +23,20 @@ local unicode = unicode
 local gpuAddress = component.list("gpu")()
 local screenAddress = component.list("screen")()
 if not gpuAddress or not screenAddress then
-  error("Meadows 2.0: GPU or screen not found.")
+  error("Meadows 3.0: GPU or screen not found.")
 end
 
 local gpu = component.proxy(gpuAddress)
 local okBind, bindErr = pcall(gpu.bind, screenAddress)
-if not okBind then error("Meadows 2.0: Could not bind screen: " .. tostring(bindErr)) end
+if not okBind then error("Meadows 3.0: Could not bind screen: " .. tostring(bindErr)) end
 
 local W, H = gpu.getResolution()
 if W < 50 or H < 20 then
-  error("Meadows 2.0 requires a screen of at least 50x20.")
+  error("Meadows 3.0 requires a screen of at least 50x20.")
 end
 pcall(gpu.setDepth, 8)
 
-local VERSION = "2.6"
+local VERSION = "3.0"
 local OS_NAME = "Meadows"
 local MAX_WINDOWS = 4
 local C = {
@@ -265,13 +264,13 @@ for address in component.list("filesystem") do
     end
   end
 end
-if #drives == 0 then error("Meadows 2.0: No writable filesystem found.") end
+if #drives == 0 then error("Meadows 3.0: No writable filesystem found.") end
 
 local function chooseStorage()
   local choice, scroll = 1, 0
   while true do
     clear(C.bg)
-    center(2, "MEADOWS 2.1 INSTALLATION", C.accent)
+    center(2, "MEADOWS 3.0 INSTALLATION", C.accent)
     center(4, "Choose the writable drive for system data.", C.white)
     local visible = math.max(1, H - 10)
     if choice > scroll + visible then scroll = choice - visible end
@@ -508,7 +507,7 @@ end
 local function termsScreen()
   while true do
     clear(C.bg)
-    center(3, "WELCOME TO MEADOWS 2.0", C.accent)
+    center(3, "WELCOME TO MEADOWS 3.0", C.accent)
     center(6, "Your files and settings are stored on the selected drive.", C.text)
     center(8, "Back up important files regularly.", C.text)
     center(10, "An independent OpenComputers desktop environment.", C.muted)
@@ -568,7 +567,7 @@ local function setupWizard()
   config.setupVersion = 2
   config.version = VERSION
   if not saveConfig() or not saveAccounts() then error("Meadows: Could not save setup.") end
-  messageDialog("SETUP COMPLETE", "Welcome to Meadows 2.2!")
+  messageDialog("SETUP COMPLETE", "Welcome to Meadows 3.0!")
 end
 
 if not config.setupComplete or #accounts == 0 or (tonumber(config.setupVersion) or 0) < 2 then setupWizard() end
@@ -576,7 +575,7 @@ if not config.setupComplete or #accounts == 0 or (tonumber(config.setupVersion) 
 local function loginScreen()
   while true do
     clear(C.bg)
-    center(3, "MEADOWS 2.2", C.accent)
+    center(3, "MEADOWS 3.0", C.accent)
     center(5, "Welcome back to " .. tostring(config.computerName), C.white)
     for i = 1, #accounts do
       button(math.floor(W / 2) - 17, 8 + (i - 1) * 2, 34,
@@ -965,24 +964,66 @@ local function drawWindow(win, active)
   button(maxX, y, 3, win.maximized and "[]" or "[]", false, C.panel2)
   button(closeX, y, 3, "X", false, C.close)
   rect(x, y + h - 1, w, 1, C.border)
+
   if win.app == "editor" or win.app == "notes" then
     local s = win.state
-    put(x + 2, y + 2, win.app == "notes" and "NOTES  |  Ctrl+S to save" or ("EDITING: " .. tostring(s.path or "")), C.accent, C.window)
-    put(x + 2, y + 3, win.app == "notes" and "Arrows move | Enter new line | Ctrl+S saves" or "Ctrl+S saves | Arrows move | Enter new line", C.muted, C.window)
+    local editorBg = C.editorBg
+
+    -- Dark, comfortable editing surface
+    rect(x + 1, y + 2, w - 2, h - 4, editorBg)
+
+    put(x + 2, y + 2,
+      win.app == "notes" and "NOTES" or ("EDITING  /  " .. baseName(s.path)),
+      C.accent, editorBg)
+
+    put(x + 2, y + 3,
+      "Ctrl+S Save   |   Arrows Move   |   Enter New Line",
+      C.editorMuted, editorBg)
+
     local lines = splitLines(s.text)
     local bodyH = math.max(1, h - 7)
     local currentLine, currentCol = editorCursorPosition(s.text, s.cursor)
-    if currentLine <= s.scroll then s.scroll = currentLine - 1 end
-    if currentLine > s.scroll + bodyH then s.scroll = currentLine - bodyH end
+
+    if currentLine <= s.scroll then
+      s.scroll = currentLine - 1
+    end
+
+    if currentLine > s.scroll + bodyH then
+      s.scroll = currentLine - bodyH
+    end
+
+    -- Comfortable document text
     for i = 1, bodyH do
       local line = lines[s.scroll + i]
-      if line then put(x + 2, y + 4 + i - 1, textSub(line, 1, w - 5), C.text, C.window) end
+      if line then
+        put(x + 2, y + 4 + i - 1,
+          textSub(line, 1, w - 5),
+          C.editorText, editorBg)
+      end
     end
-    put(x + 2, y + h - 2, s.dirty and "* Unsaved changes" or (win.app == "notes" and "Saved" or "Saved to disk"), s.dirty and C.accent or C.muted, C.window)
-    if active and currentLine > s.scroll and currentLine <= s.scroll + bodyH and math.floor(computer.uptime() * 2) % 2 == 0 then
+
+    -- Cursor
+    if active and currentLine > s.scroll
+      and currentLine <= s.scroll + bodyH
+      and math.floor(computer.uptime() * 2) % 2 == 0 then
+
       local cx = math.min(x + w - 3, x + 2 + currentCol)
-      put(cx, y + 4 + currentLine - s.scroll - 1, "|", C.accent, C.window)
+
+      put(cx, y + 4 + currentLine - s.scroll - 1,
+        "|", C.accent, editorBg)
     end
+
+    -- Status bar
+    rect(x + 1, y + h - 2, w - 2, 1, C.panel)
+
+    put(x + 2, y + h - 2,
+      s.dirty and "* Unsaved changes" or "Saved",
+      s.dirty and C.accent or C.editorMuted,
+      C.panel)
+
+    put(x + w - 17, y + h - 2,
+      "Ln " .. tostring(currentLine),
+      C.editorMuted, C.panel)
   elseif win.app == "picture" then
     local s = win.state
     put(x + 2, y + 2, "PICTURE VIEWER: " .. tostring(s.path or ""), C.accent, C.window)
@@ -1020,98 +1061,250 @@ local function drawWindow(win, active)
     put(x + 2, y + h - 2, prompt:sub(1, w - 5), C.white, C.input)
     local cursorX = math.min(x + w - 3, x + 2 + #s.path + 2 + textLen(s.command))
     if active and math.floor(computer.uptime() * 2) % 2 == 0 then put(cursorX, y + h - 2, "|", C.accent, C.input) end
+
   elseif win.app == "files" then
     local s = win.state
-    local sideW = math.min(s.sidebar or 16, math.max(12, math.floor(w * 0.28)))
+
+    -- Layout
+    local sideW = math.min(15, math.max(12, math.floor(w * 0.25)))
     local mainX = x + sideW + 2
     local mainW = w - sideW - 3
-    -- Meadows-native Finder layout: forest sidebar, compact path/navigation strip.
+
+    -- Sidebar
     rect(x + 1, y + 1, sideW, h - 2, C.panel)
-    put(x + 2, y + 2, "FAVOURITES", C.accent, C.panel)
-    local favs = {{"Root", "/"}}
-    local candidates = {{"Home", "/home"}, {"Desktop", "/home/desktop"}, {"Applications", "/apps"}, {"Programs", "/usr"}, {"Temporary", "/tmp"}}
-    for i = 1, #candidates do
-      local ok, exists = pcall(filesystem.exists, candidates[i][2])
-      local isDir = false
-      if ok and exists then pcall(function() isDir = filesystem.isDirectory(candidates[i][2]) end) end
-      if isDir then favs[#favs + 1] = candidates[i] end
-    end
+    put(x + 2, y + 2, "LOCATIONS", C.accent, C.panel)
+
+    local favs = {
+      {"Home", "/home"},
+      {"Desktop", "/home/desktop"},
+      {"Applications", "/apps"},
+      {"Programs", "/usr"},
+      {"Temporary", "/tmp"},
+      {"Root", "/"}
+    }
+
     s.sidebarRows = {}
+
     for i = 1, #favs do
-      local row = y + 4 + (i - 1)
-      if row < y + h - 3 then
-        local path = favs[i][2]
-        local label = (s.path == path and "> " or "  ") .. favs[i][1]
-        put(x + 2, row, label, s.path == path and C.white or C.text, C.panel)
-        s.sidebarRows[#s.sidebarRows + 1] = {x=x+1,y=row,w=sideW,path=path,enabled=true}
+      local path = favs[i][2]
+      local ok, exists = pcall(filesystem.exists, path)
+      local isDir = false
+
+      if ok and exists then
+        pcall(function()
+          isDir = filesystem.isDirectory(path)
+        end)
+      end
+
+      if isDir then
+        local row = y + 4 + #s.sidebarRows
+        if row < y + h - 3 then
+          local selected = s.path == path
+
+          if selected then
+            rect(x + 1, row, sideW, 1, C.select)
+          end
+
+          put(x + 2, row,
+            (selected and "> " or "  ") .. favs[i][1],
+            selected and C.white or C.fileText,
+            selected and C.select or C.panel)
+
+          s.sidebarRows[#s.sidebarRows + 1] = {
+            x = x + 1,
+            y = row,
+            w = sideW,
+            path = path,
+            enabled = true
+          }
+        end
       end
     end
-    put(mainX, y + 2, "‹", C.accent, C.window); put(mainX + 2, y + 2, "›", C.accent, C.window)
-    put(mainX + 5, y + 2, "↑", C.accent, C.window)
-    put(mainX + 8, y + 2, "PATH", C.muted, C.window)
-    put(mainX + 13, y + 2, s.path, C.accent, C.window)
-    s.nav = {back={x=mainX,y=y+2},forward={x=mainX+2,y=y+2},up={x=mainX+5,y=y+2}}
-    local tools = {"New Folder", "New File", "Open", "Rename", "Copy", "Cut", "Paste", "Delete", s.gridMode and "List View" or "Grid View"}
-    local bx, by = mainX, y + 4
+
+    -- Navigation and address bar
+    rect(mainX, y + 1, mainW, 3, C.window)
+
+    put(mainX + 1, y + 2, "<", C.accent, C.window)
+    put(mainX + 4, y + 2, ">", C.accent, C.window)
+    put(mainX + 7, y + 2, "^", C.accent, C.window)
+
+    put(mainX + 10, y + 2, "LOCATION", C.editorMuted, C.window)
+    put(mainX + 20, y + 2,
+      textSub(s.path, 1, math.max(1, mainW - 22)),
+      C.accent, C.window)
+
+    s.nav = {
+      back = {x = mainX + 1, y = y + 2},
+      forward = {x = mainX + 4, y = y + 2},
+      up = {x = mainX + 7, y = y + 2}
+    }
+
+    -- Clean two-row toolbar
+    local toolbarRows = {
+      {
+        {"New Folder", 11},
+        {"New File", 10},
+        {"Open", 6},
+        {"Rename", 8}
+      },
+      {
+        {"Copy", 6},
+        {"Cut", 5},
+        {"Paste", 7},
+        {"Delete", 8},
+        {s.gridMode and "List View" or "Grid View", 11}
+      }
+    }
+
     s.buttons = {}
-    for i = 1, #tools do
-      local label = tools[i]
-      local width = #label + 2
-      if bx + width > x + w - 2 then bx = mainX; by = by + 2 end
-      if by < y + h - 5 then
+
+    for rowIndex = 1, #toolbarRows do
+      local bx = mainX
+      local by = y + 4 + (rowIndex - 1) * 2
+
+      for i = 1, #toolbarRows[rowIndex] do
+        local label = toolbarRows[rowIndex][i][1]
+        local width = toolbarRows[rowIndex][i][2]
+
         button(bx, by, width, label, false)
-        s.buttons[#s.buttons + 1] = {label = label, x = bx, y = by, w = width}
+
+        s.buttons[#s.buttons + 1] = {
+          label = label,
+          x = bx,
+          y = by,
+          w = width
+        }
+
+        bx = bx + width + 1
       end
-      bx = bx + width + 1
     end
-    local listY = by + 2
+
+    -- File list header
+    local listY = y + 8
     s.listY = listY
-    put(mainX, listY - 1, "NAME", C.accent, C.window)
+
+    rect(mainX - 1, listY - 1, mainW, 1, C.panel2)
+
+    put(mainX, listY - 1, "NAME", C.accent, C.panel2)
+    put(mainX + mainW - 6, listY - 1, "TYPE", C.accent, C.panel2)
+
+    -- Directory contents
     local entries, listError = listDirectory(s.path)
     s.entries = entries
+
     local visible = math.max(1, y + h - 3 - listY)
     s.visible = visible
     s.gridCells = {}
+
     if s.gridMode then
       local columns = math.max(1, math.floor(mainW / 16))
       local rows = math.max(1, math.floor(visible / 2))
       local capacity = columns * rows
+      local cellW = math.floor(mainW / columns)
+
       for i = 1, math.min(capacity, #entries - s.scroll) do
         local index = i + s.scroll
         local col = (i - 1) % columns
         local row = math.floor((i - 1) / columns)
-        local cx = mainX + col * math.floor(mainW / columns)
+
+        local cx = mainX + col * cellW
         local cy = listY + row * 2
         local entry = entries[index]
         local full = pathJoin(s.path, entry)
+
         local folder = false
-        pcall(function() folder = filesystem.isDirectory(full) end)
+        pcall(function()
+          folder = filesystem.isDirectory(full)
+        end)
+
         local selected = s.selected == entry
-        if selected then rect(cx - 1, cy, math.floor(mainW / columns) - 1, 2, C.select) end
-        put(cx, cy, folder and "[DIR]" or "[FILE]", C.accent, selected and C.select or C.window)
-        put(cx, cy + 1, entry, C.white, selected and C.select or C.window)
-        s.gridCells[#s.gridCells + 1] = {x=cx-1,y=cy,w=math.floor(mainW / columns)-1,h=2,name=entry}
+        local cellWidth = cellW - 1
+
+        if selected then
+          rect(cx - 1, cy, cellWidth, 2, C.select)
+        end
+
+        put(cx, cy,
+          folder and "[DIR]" or "[FILE]",
+          C.accent,
+          selected and C.select or C.window)
+
+        put(cx, cy + 1,
+          textSub(entry, 1, math.max(1, cellWidth - 1)),
+          C.fileText,
+          selected and C.select or C.window)
+
+        s.gridCells[#s.gridCells + 1] = {
+          x = cx - 1,
+          y = cy,
+          w = cellWidth,
+          h = 2,
+          name = entry
+        }
       end
+
     else
+      -- Clean, readable file rows
       for i = 1, visible do
         local index = i + s.scroll
         local entry = entries[index]
+
         if entry then
           local full = pathJoin(s.path, entry)
+
           local folder = false
-          pcall(function() folder = filesystem.isDirectory(full) end)
+          pcall(function()
+            folder = filesystem.isDirectory(full)
+          end)
+
           local row = listY + i - 1
           local selected = s.selected == entry
-          if selected then rect(mainX - 1, row, mainW, 1, C.select) end
-          put(mainX, row, (folder and "▸  " or "   ") .. entry, C.white, selected and C.select or C.window)
+
+          if selected then
+            rect(mainX - 1, row, mainW, 1, C.select)
+          end
+
+          local displayName = (folder and "> " or "  ") .. entry
+
+          put(mainX, row,
+            textSub(displayName, 1, math.max(1, mainW - 8)),
+            selected and C.white or C.fileText,
+            selected and C.select or C.window)
+
+          put(mainX + mainW - 6, row,
+            folder and "DIR" or "FILE",
+            folder and C.accent or C.editorMuted,
+            selected and C.select or C.window)
         end
       end
     end
+
+    -- Empty directory / error state
     if #entries == 0 then
-      put(mainX, listY, listError and "Cannot read this folder:" or "This folder is empty.", listError and C.close or C.muted, C.window)
-      if listError then put(mainX, listY + 1, tostring(listError), C.text, C.window) end
+      put(mainX + 1, listY + 1,
+        listError and "Unable to open this location." or "This folder is empty.",
+        listError and C.close or C.editorMuted,
+        C.window)
+
+      if listError then
+        put(mainX + 1, listY + 2,
+          tostring(listError),
+          C.editorMuted,
+          C.window)
+      end
     end
-    put(mainX, y + h - 2, s.selected and ("Selected: " .. s.selected) or (tostring(#entries) .. " items"), C.muted, C.window)
+
+    -- Bottom information bar
+    rect(mainX - 1, y + h - 2, mainW, 1, C.panel)
+
+    local info = s.selected and
+      ("Selected: " .. s.selected) or
+      (tostring(#entries) .. " items")
+
+    put(mainX, y + h - 2,
+      textSub(info, 1, mainW - 2),
+      C.editorMuted,
+      C.panel)
   elseif win.app == "settings" then
     put(x + 2, y + 2, "PERSONALIZATION", C.accent, C.window)
     for i = 1, #wallpapers do
@@ -1143,7 +1336,7 @@ local function drawWindow(win, active)
     button(x + 2, y + 12, w - 4, "Set UTC Offset / World Time", false)
     put(x + 2, y + 13, "Virtual clock; hardware time unchanged.", C.muted, C.window)
   elseif win.app == "about" then
-    centerInWindow(x, y + 4, w, "MEADOWS OS 2.1", C.accent, C.window)
+    centerInWindow(x, y + 4, w, "MEADOWS OS 3.0", C.accent, C.window)
     centerInWindow(x, y + 6, w, "Forest Edition", C.white, C.window)
     centerInWindow(x, y + 8, w, "A desktop for OpenComputers.", C.text, C.window)
     centerInWindow(x, y + 10, w, "Storage | Windows | Apps", C.muted, C.window)
@@ -1156,7 +1349,7 @@ local function drawStartMenu()
   local x, y = math.max(1, math.floor((W - mw) / 2)), math.max(1, H - mh - 2)
   rect(x, y, mw, mh, C.window)
   rect(x, y, mw, 1, C.title)
-  put(x + 2, y, "MEADOWS 2.2", C.white, C.title)
+  put(x + 2, y, "MEADOWS 3.0", C.white, C.title)
   local entries = {
     {"File Explorer", "files"}, {"Notes", "notes"}, {"Terminal", "terminal"},
     {"Settings", "settings"}, {"System Monitor", "monitor"},
@@ -1771,7 +1964,7 @@ end
 
 -- ------------------------- Final boot -------------------------
 clear(C.bg)
-center(math.floor(H / 2) - 1, "MEADOWS OS 2.1", C.accent)
+center(math.floor(H / 2) - 1, "MEADOWS OS 3.0", C.accent)
 center(math.floor(H / 2) + 1, "Preparing Forest Desktop...", C.white)
 computer.pullSignal(0.45)
 desktopLoop()
