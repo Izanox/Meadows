@@ -1,6 +1,6 @@
 -- =========================================================
--- CHANGE 5.5
--- MEADOWS OS 2.1 - FOREST EDITION
+-- CHANGE 5.6
+-- MEADOWS OS 2.2 - FOREST EDITION
 -- Native OpenComputers BIOS kernel
 -- =========================================================
 -- Install as the kernel loaded by your EEPROM.
@@ -37,9 +37,9 @@ if W < 50 or H < 20 then
 end
 pcall(gpu.setDepth, 8)
 
-local VERSION = "2.1"
+local VERSION = "2.2"
 local OS_NAME = "Meadows"
-local MAX_WINDOWS = 2
+local MAX_WINDOWS = 4
 local C = {
   bg = 0x08130E, desktop = 0x10271B, desktop2 = 0x183A28,
   panel = 0x14251C, panel2 = 0x20382B, window = 0x17271E,
@@ -323,7 +323,7 @@ local function writeFile(path, data) return fsWrite(filesystem, path, data) end
 -- ------------------------- Configuration and accounts -------------------------
 config = {
   computerName = "Meadows-PC", wallpaper = 1, username = "",
-  displayName = "", setupComplete = false, version = VERSION,
+  displayName = "", adminName = "", setupComplete = false, setupVersion = 0, passwordEnabled = true, version = VERSION,
   clockShift = 0, utcOffset = 0
 }
 
@@ -339,6 +339,9 @@ local function saveConfig()
     "wallpaper=" .. cleanValue(config.wallpaper),
     "username=" .. cleanValue(config.username),
     "displayName=" .. cleanValue(config.displayName),
+    "adminName=" .. cleanValue(config.adminName),
+    "passwordEnabled=" .. tostring(config.passwordEnabled ~= false),
+    "setupVersion=" .. tostring(tonumber(config.setupVersion) or 0),
     "setupComplete=" .. tostring(config.setupComplete),
     "version=" .. cleanValue(config.version),
     "clockShift=" .. tostring(tonumber(config.clockShift) or 0),
@@ -357,6 +360,9 @@ local function loadConfig()
       elseif key == "wallpaper" then config.wallpaper = tonumber(value) or 1
       elseif key == "username" then config.username = value
       elseif key == "displayName" then config.displayName = value
+      elseif key == "adminName" then config.adminName = value
+      elseif key == "passwordEnabled" then config.passwordEnabled = value == "true"
+      elseif key == "setupVersion" then config.setupVersion = tonumber(value) or 0
       elseif key == "setupComplete" then config.setupComplete = value == "true"
       elseif key == "version" then config.version = value
       elseif key == "clockShift" then config.clockShift = tonumber(value) or 0
@@ -403,7 +409,7 @@ end
 loadAccounts()
 
 -- ------------------------- Input and message dialogs -------------------------
-local function inputDialog(title, prompt, initial)
+local function inputDialog(title, prompt, initial, masked, digitsOnly)
   local value = tostring(initial or "")
   local cursor = #value + 1
   local blink = true
@@ -416,7 +422,7 @@ local function inputDialog(title, prompt, initial)
     center(boxY, title, C.white, C.title)
     center(boxY + 2, prompt, C.text, C.window)
     rect(6, boxY + 5, W - 12, 1, C.input)
-    local shown = value
+    local shown = masked and string.rep("*", #value) or value
     local maxChars = W - 16
     if textLen(shown) > maxChars then shown = textSub(shown, textLen(shown) - maxChars + 1, -1) end
     put(7, boxY + 5, shown, C.white, C.input)
@@ -441,6 +447,7 @@ local function inputDialog(title, prompt, initial)
       elseif code == 14 then value = backspace(value)
       else
         local c = charFromCode(ch)
+        if digitsOnly and not c:match("^%d$") then c = "" end
         if c ~= "" and textLen(value) < 120 then value = appendChar(value, c) end
       end
     end
@@ -506,27 +513,56 @@ local function termsScreen()
   end
 end
 
-local function setupWizard()
-  if not termsScreen() then error("Meadows setup was declined.") end
-  config.computerName = cleanValue(inputDialog("COMPUTER NAME", "Name this computer:", config.computerName) or "Meadows-PC")
-  local display = inputDialog("CREATE ACCOUNT", "Enter your display name:", "") or "User"
-  local username = cleanValue(inputDialog("CREATE ACCOUNT", "Choose a username:", "user") or "user")
-  local password = inputDialog("CREATE PASSWORD", "Enter a password (can be blank):", "") or ""
-  accounts = {{username = username, displayName = cleanValue(display), passwordHash = hashPassword(password)}}
-  config.username = username
-  config.displayName = cleanValue(display)
-  config.setupComplete = true
-  config.version = VERSION
-  if not saveConfig() or not saveAccounts() then error("Meadows: Could not save setup.") end
-  messageDialog("SETUP COMPLETE", "Welcome to Meadows 2.1!")
+local function requiredInput(title, prompt, initial)
+  while true do
+    local value = inputDialog(title, prompt, initial)
+    if value == nil then
+      messageDialog("REQUIRED FIELD", "This field cannot be left blank.")
+    else
+      value = cleanValue(value):gsub("^%s+", ""):gsub("%s+$", "")
+      if value ~= "" then return value end
+      messageDialog("REQUIRED FIELD", "You must type something here.")
+    end
+    initial = ""
+  end
 end
 
-if not config.setupComplete or #accounts == 0 then setupWizard() end
+local function setupWizard()
+  if not termsScreen() then error("Meadows setup was declined.") end
+  config.computerName = requiredInput("COMPUTER NAME", "Name this computer:", config.computerName)
+  local display = requiredInput("DISPLAY NAME", "Display name (default: user):", "user")
+  local username = requiredInput("USERNAME", "Choose a username:", "user")
+  local adminName = requiredInput("ADMIN NAME", "Enter administrator name:", "admin")
+  local passwordEnabled = confirmDialog("PASSWORD PROTECTION", "Enable a sign-in PIN? Yes = enabled, No = disabled")
+  local passwordHash = ""
+  if passwordEnabled then
+    while true do
+      local pin = inputDialog("CREATE PIN", "Enter a numeric PIN (at least 4 digits):", "", true, true)
+      if pin and pin:match("^%d%d%d%d+$") then
+        passwordHash = hashPassword(pin)
+        break
+      end
+      messageDialog("INVALID PIN", "PIN must contain at least 4 digits (0-9).")
+    end
+  end
+  config.username = username
+  config.displayName = display
+  config.adminName = adminName
+  config.passwordEnabled = passwordEnabled
+  accounts = {{username = username, displayName = display, passwordHash = passwordHash}}
+  config.setupComplete = true
+  config.setupVersion = 2
+  config.version = VERSION
+  if not saveConfig() or not saveAccounts() then error("Meadows: Could not save setup.") end
+  messageDialog("SETUP COMPLETE", "Welcome to Meadows 2.2!")
+end
+
+if not config.setupComplete or #accounts == 0 or (tonumber(config.setupVersion) or 0) < 2 then setupWizard() end
 
 local function loginScreen()
   while true do
     clear(C.bg)
-    center(3, "MEADOWS 2.1", C.accent)
+    center(3, "MEADOWS 2.2", C.accent)
     center(5, "Welcome back to " .. tostring(config.computerName), C.white)
     for i = 1, #accounts do
       button(math.floor(W / 2) - 17, 8 + (i - 1) * 2, 34,
@@ -539,9 +575,10 @@ local function loginScreen()
         for i = 1, #accounts do
           local row = 8 + (i - 1) * 2
           if hit(x, y, math.floor(W / 2) - 17, row, 34, 1) then
-            local pw = inputDialog("SIGN IN", "Password for " .. accounts[i].username .. ":", "")
+            if not accounts[i].passwordHash or accounts[i].passwordHash == "" then return accounts[i] end
+            local pw = inputDialog("SIGN IN", "Enter PIN for " .. accounts[i].username .. ":", "", true, true)
             if pw ~= nil and verifyPassword(pw, accounts[i].passwordHash) then return accounts[i] end
-            messageDialog("SIGN IN FAILED", "Incorrect password.")
+            messageDialog("SIGN IN FAILED", "Incorrect PIN.")
           end
         end
       end
@@ -612,7 +649,13 @@ local function listDirectory(path)
     entry = tostring(entry):gsub("/$", "")
     if entry ~= "" then result[#result + 1] = entry end
   end
-  table.sort(result, function(a, b) return a:lower() < b:lower() end)
+  table.sort(result, function(a, b)
+    local da = false; local db = false
+    pcall(function() da = filesystem.isDirectory(pathJoin(path, a)) end)
+    pcall(function() db = filesystem.isDirectory(pathJoin(path, b)) end)
+    if da ~= db then return da end
+    return a:lower() < b:lower()
+  end)
   return result
 end
 
@@ -931,7 +974,8 @@ local function drawWindow(win, active)
       local entry = entries[index]
       if entry then
         local full = pathJoin(s.path, entry)
-        local folder = filesystem.isDirectory(full)
+        local folder = false
+        pcall(function() folder = filesystem.isDirectory(full) end)
         local row = listY + i - 1
         local selected = s.selected == entry
         if selected then rect(x + 1, row, w - 2, 1, C.select) end
@@ -983,7 +1027,7 @@ local function drawStartMenu()
   local x, y = math.max(1, math.floor((W - mw) / 2)), math.max(1, H - mh - 2)
   rect(x, y, mw, mh, C.window)
   rect(x, y, mw, 1, C.title)
-  put(x + 2, y, "MEADOWS 2.1", C.white, C.title)
+  put(x + 2, y, "MEADOWS 2.2", C.white, C.title)
   local entries = {
     {"File Explorer", "files"}, {"Notes", "notes"}, {"Terminal", "terminal"},
     {"Settings", "settings"}, {"System Monitor", "monitor"},
@@ -1130,16 +1174,23 @@ local function editTextKey(win, char, code, ctrl)
   s.dirty = true
   if win.app == "notes" then
     if saveNotes(s.text) then s.dirty = false end
-  elseif win.app == "editor" then
-    saveDocument(win)
   end
+  -- Text files are saved with Ctrl+S or when their editor window is closed.
+  -- Avoid writing to disk on every keystroke; this caused visible lag on OC drives.
 end
 
 local function handleWindowKey(win, char, code, ctrl, alt)
   local s = win.state
-  if alt and code == 62 then closeWindow(win.id); return end -- Alt+F4
-  if code == 62 then closeWindow(win.id); return end -- F4 fallback on keyboards without modifier state
+  if alt and code == 62 then
+    if win.app == "editor" and s.dirty then saveDocument(win) end
+    closeWindow(win.id); return
+  end -- Alt+F4
+  if code == 62 then
+    if win.app == "editor" and s.dirty then saveDocument(win) end
+    closeWindow(win.id); return
+  end -- F4 fallback on keyboards without modifier state
   if code == 1 then
+    if win.app == "editor" and s.dirty then saveDocument(win) end
     closeWindow(win.id)
     return
   end
@@ -1209,17 +1260,28 @@ local function appTouch(win, tx, ty)
         local action = b.label
         if action == "Up" then s.path = parentPath(s.path); s.selected = nil; s.scroll = 0
         elseif action == "NewFolder" then
-          local name = safeName(inputDialog("NEW FOLDER", "Folder name:", "New Folder"))
-          if name then
-            local target = pathJoin(s.path, name)
-            local ok, result = pcall(filesystem.makeDirectory, target)
-            if not ok or result == false or not filesystem.exists(target) or not filesystem.isDirectory(target) then
-              messageDialog("ERROR", "Could not create folder: " .. tostring(result))
+          local entered = inputDialog("NEW FOLDER", "Folder name:", "New Folder")
+          local name = safeName(entered)
+          if entered ~= nil then
+            if not name then messageDialog("ERROR", "Enter a valid folder name.")
+            else
+              local target = pathJoin(s.path, name)
+              if filesystem.exists(target) then messageDialog("ERROR", "That item already exists.")
+              else
+                local ok, result = pcall(filesystem.makeDirectory, target)
+                local exists, isDir = false, false
+                pcall(function() exists = filesystem.exists(target); isDir = exists and filesystem.isDirectory(target) end)
+                if not ok or result == false or not exists or not isDir then
+                  messageDialog("ERROR", "Could not create folder: " .. tostring(result))
+                else s.selected = name end
+              end
             end
           end
         elseif action == "NewFile" then
-          local name = safeName(inputDialog("NEW FILE", "File name:", "New File.txt"))
-          if name then
+          local entered = inputDialog("NEW FILE", "File name:", "New File.txt")
+          local name = safeName(entered)
+          if entered ~= nil then
+            if not name then messageDialog("ERROR", "Enter a valid file name.") else
             local target = pathJoin(s.path, name)
             if filesystem.exists(target) then messageDialog("ERROR", "That item already exists.")
             else
@@ -1229,6 +1291,7 @@ local function appTouch(win, tx, ty)
                 s.selected = name
                 openFileInEditor(target)
               end
+            end
             end
           end
         elseif action == "Open" and s.selected then
